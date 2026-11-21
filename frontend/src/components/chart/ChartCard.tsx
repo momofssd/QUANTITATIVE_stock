@@ -1,6 +1,6 @@
 /** The "Chart" card: title + status note, toolbar, chart. */
 import { forwardRef } from "react";
-import type { AnalysisLineDef, EntryMarker, PriceLineDef } from "../../chart/markers";
+import type { EntryMarker, PriceLineDef } from "../../chart/markers";
 import { feedName } from "../../config/feeds";
 import { TF_LABEL } from "../../config/timeframes";
 import type { BarsState, ChartOverlay } from "../../hooks/useBars";
@@ -18,7 +18,6 @@ interface Props {
   onDateError: (msg: string | null) => void;
   markers: EntryMarker[];
   priceLines: PriceLineDef[];
-  analysisLines: AnalysisLineDef[];
   analyzing: boolean;
   onAnalyze: () => void;
 }
@@ -36,7 +35,7 @@ function chartNote(bars: BarsState | null): string {
 }
 
 export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
-  { settings, bars, overlay, busyNote, onNeedOlder, onDateError, markers, priceLines, analysisLines, analyzing, onAnalyze },
+  { settings, bars, overlay, busyNote, onNeedOlder, onDateError, markers, priceLines, analyzing, onAnalyze },
   ref,
 ) {
   const p = bars?.payload.params;
@@ -48,7 +47,7 @@ export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
           <span className="note">{busyNote ?? chartNote(bars)}</span>
           <button
             className="btn btn-primary btn-analyze" onClick={onAnalyze} disabled={analyzing}
-            title="Quant analysis of the last 5 years of daily K-lines: marks short-term and long-term entry points"
+            title="Retrain the quant analysis on this chart's K-lines and mark short-term entry / take-profit points"
           >
             {analyzing ? <><span className="spinner spinner-sm" /> Analyzing…</> : "Find entry points"}
           </button>
@@ -59,7 +58,7 @@ export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
         ref={ref} bars={bars} chartType={settings.chartType} enabled={settings.enabledSet} overlay={overlay}
         rsiLabel={`RSI (${p?.rsi ?? settings.params.rsi})`}
         macdLabel={`MACD (${(p?.macd ?? settings.params.macd).join(", ")})`}
-        markers={markers} priceLines={priceLines} analysisLines={analysisLines}
+        markers={markers} priceLines={priceLines}
         onNeedOlder={onNeedOlder}
       />
     </section>

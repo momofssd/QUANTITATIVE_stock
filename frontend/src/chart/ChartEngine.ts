@@ -8,7 +8,6 @@
 import {
   createChart,
   CrosshairMode,
-  LineType,
   type DeepPartial,
   type ChartOptions,
   type IChartApi,
@@ -24,7 +23,8 @@ import { barTime } from "../lib/format";
 import type { BarColumns, BarsPayload, ServerIndicatorParams, Timeframe } from "../types/api";
 import { bucketFor, inRegularSession } from "./buckets";
 import { buildLegend, type LegendModel } from "./legend";
-import type { AnalysisLineDef, EntryMarker, PriceLineDef } from "./markers";
+import { BandFillSeries } from "./bandSeries";
+import type { EntryMarker, PriceLineDef } from "./markers";
 import { COLORS, FONT_FAMILY, OVERLAYS, type OverlayDef } from "./theme";
 
 export type ChartType = "candles" | "bars" | "line";
@@ -81,11 +81,10 @@ export class ChartEngine {
   private markers: EntryMarker[] = [];
   private lineDefs: PriceLineDef[] = [];
   private priceLines: IPriceLine[] = [];
-  private analysisDefs: AnalysisLineDef[] = [];
-  private analysisSeries = new Map<string, AnySeries>();
 
   private priceSeries!: AnySeries;
   private readonly volSeries: AnySeries;
+  private readonly bbFill: AnySeries; // shaded area between the Bollinger bands
   private readonly overlaySeries: (OverlayDef & { series: AnySeries })[];
   private readonly rsiSeries: AnySeries;
   private readonly macdHist: AnySeries;
@@ -98,6 +97,10 @@ export class ChartEngine {
     this.macdChart = createChart(els.macd, baseOptions());
     this.charts = [this.main, this.rsiChart, this.macdChart];
 
+    // Created before the price series so the shading is drawn underneath the candles.
+    this.bbFill = this.main.addCustomSeries(new BandFillSeries(), {
+      fillColor: COLORS.bbFill, priceLineVisible: false, lastValueVisible: false, visible: false,
+    }) as unknown as AnySeries;
     this.createPriceSeries();
     this.volSeries = this.main.addHistogramSeries({
       priceScaleId: "vol", priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
@@ -160,52 +163,6 @@ export class ChartEngine {
   setPriceLines(lines: PriceLineDef[]): void {
     this.lineDefs = lines;
     this.applyPriceLines();
-  }
-
-  /** Extra line series on the price pane (e.g. SMA 60 + average cost). Only points on loaded bars are drawn,
-   *  so they never add time slots to the chart. */
-  setAnalysisLines(lines: AnalysisLineDef[]): void {
-    this.analysisDefs = lines;
-    this.applyAnalysisLines();
-  }
-
-  private applyAnalysisLines(): void {
-    const keep = new Set(this.analysisDefs.map((d) => d.key));
-    this.analysisSeries.forEach((s, k) => {
-      if (!keep.has(k)) {
-        this.main.removeSeries(s);
-        this.analysisSeries.delete(k);
-      }
-    });
-    for (const d of this.analysisDefs) {
-      let s = this.analysisSeries.get(d.key);
-      if (!s) {
-        s = this.main.addLineSeries({
-          color: d.color, lineWidth: d.width, lineStyle: d.style,
-          lineType: d.step ? LineType.WithSteps : LineType.Simple,
-          priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, title: d.title,
-          // Never stretch the price axis to fit these lines (e.g. a 5-year average cost far below today's price).
-          autoscaleInfoProvider: () => null,
-        });
-        this.analysisSeries.set(d.key, s);
-      }
-      s.setData(this.onLoadedBars(d).map((p) => ({ time: p.time as Time, value: p.value })));
-    }
-  }
-
-  /** Points restricted to loaded bars; step lines are carried forward onto every loaded bar after each point. */
-  private onLoadedBars(d: AnalysisLineDef): { time: number; value: number }[] {
-    const t = this.data?.time;
-    if (!t?.length) return [];
-    if (!d.step) return d.data.filter((p) => this.timeIndex.has(p.time));
-    const out: { time: number; value: number }[] = [];
-    let k = 0;
-    let cur: number | null = null;
-    for (const time of t) {
-      while (k < d.data.length && d.data[k].time <= time) cur = d.data[k++].value;
-      if (cur !== null) out.push({ time, value: cur });
-    }
-    return out;
   }
 
   private applyMarkers(): void {
@@ -280,6 +237,10 @@ export class ChartEngine {
         return this.type === "line"
           ? { time, value: d.close[i] }
           : { time, open: d.open[i], high: d.high[i], low: d.low[i], close: d.close[i] };
+      case "bbFill": {
+        const u = d.bb_upper[i], l = d.bb_lower[i];
+        return u === null || l === null || u === undefined || l === undefined ? { time } : { time, upper: u, lower: l };
+      }
       case "vol":
         return { time, value: d.volume[i], color: d.close[i] >= d.open[i] ? COLORS.upVol : COLORS.downVol };
       case "macdHist": {
@@ -303,6 +264,7 @@ export class ChartEngine {
     return [
       [this.priceSeries, "price"],
       [this.volSeries, "vol"],
+      [this.bbFill, "bbFill"],
       ...this.overlaySeries.map((o): [AnySeries, PointKind] => [o.series, o.col]),
       [this.rsiSeries, "rsi"],
       [this.macdHist, "macdHist"],
@@ -330,7 +292,6 @@ export class ChartEngine {
     if (!cols || !n) {
       this.seriesPlan().forEach(([s]) => s.setData([]));
       this.applyMarkers();
-      this.applyAnalysisLines();
       this.emitLegend();
       return;
     }
@@ -357,7 +318,6 @@ export class ChartEngine {
         this.showFrom(payload.view_start);
       }
       this.applyMarkers();
-      this.applyAnalysisLines();
     }
     this.emitLegend();
   }
@@ -444,6 +404,7 @@ export class ChartEngine {
     this.enabled = new Set(enabled);
     this.overlaySeries.forEach((o) => o.series.applyOptions({ visible: this.enabled.has(o.key) }));
     this.volSeries.applyOptions({ visible: this.enabled.has("volume") });
+    this.bbFill.applyOptions({ visible: this.enabled.has("bb") });
     this.applyPriceMargins();
     // Only the bottom-most visible pane shows the time axis.
     const bottom = this.enabled.has("macd") ? this.macdChart : this.enabled.has("rsi") ? this.rsiChart : this.main;

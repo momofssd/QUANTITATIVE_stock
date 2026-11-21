@@ -5,7 +5,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ChartEngine, type ChartType } from "../../chart/ChartEngine";
 import type { LegendModel } from "../../chart/legend";
-import type { AnalysisLineDef, EntryMarker, PriceLineDef } from "../../chart/markers";
+import type { EntryMarker, PriceLineDef } from "../../chart/markers";
 import type { IndicatorKey } from "../../config/indicators";
 import type { BarsState, ChartOverlay } from "../../hooks/useBars";
 import type { Timeframe } from "../../types/api";
@@ -24,12 +24,11 @@ interface Props {
   macdLabel: string;
   markers: EntryMarker[];
   priceLines: PriceLineDef[];
-  analysisLines: AnalysisLineDef[];
   onNeedOlder: () => void;
 }
 
 export const PriceChart = forwardRef<PriceChartHandle, Props>(function PriceChart(
-  { bars, chartType, enabled, overlay, rsiLabel, macdLabel, markers, priceLines, analysisLines, onNeedOlder }, ref,
+  { bars, chartType, enabled, overlay, rsiLabel, macdLabel, markers, priceLines, onNeedOlder }, ref,
 ) {
   const mainEl = useRef<HTMLDivElement>(null);
   const rsiEl = useRef<HTMLDivElement>(null);
@@ -60,7 +59,6 @@ export const PriceChart = forwardRef<PriceChartHandle, Props>(function PriceChar
 
   useEffect(() => engine.current?.setMarkers(markers), [markers]);
   useEffect(() => engine.current?.setPriceLines(priceLines), [priceLines]);
-  useEffect(() => engine.current?.setAnalysisLines(analysisLines), [analysisLines]);
 
   useImperativeHandle(ref, () => ({
     applyTick: (tick, tf, extended) => engine.current?.applyTick(tick, tf, extended) ?? false,

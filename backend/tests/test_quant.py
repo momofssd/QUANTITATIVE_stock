@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 
 from backend.app.quant import model as qm
-from backend.app.quant.cost_check import average_cost_check, harmonic_mean, sma
 from backend.app.quant.targets import (EXPIRED, PENDING, STOP, TARGET, TargetSpec, atr, session_horizon,
                                        triple_barrier)
 
@@ -45,7 +44,7 @@ def test_train_mask_excludes_outcomes_not_yet_known():
 
 
 def test_threshold_and_reliability():
-    assert abs(qm.threshold_for(0.30) - 0.45) < 1e-9
+    assert abs(qm.threshold_for(0.30) - (0.30 + qm.SIGNAL_EDGE)) < 1e-9
     assert qm.threshold_for(0.0) == qm.THRESHOLD_BOUNDS[0]
     assert qm.threshold_for(0.95) == qm.THRESHOLD_BOUNDS[1]
     assert qm.reliability(0.60, 0.40, 0.30)[0] is True
@@ -92,13 +91,3 @@ def test_session_horizon_counts_trading_sessions_not_bars():
     assert end[1] == 5                       # bar at 10:00 day 0 -> through 10:00 day 1
     assert end[0] == 4 and complete[0]
     assert end[9] == 11 and not complete[9]  # day 2 has no next session yet
-
-
-def test_average_cost_check():
-    close = np.array([100.0] * 60 + [80.0, 120.0, 130.0])
-    c = average_cost_check([60, 61], close, w0=0)
-    assert abs(c["avg_cost"] - harmonic_mean(np.array([80.0, 120.0]))) < 1e-9   # equal dollars per buy
-    assert c["sma_now"] == sma(close)[-1] and c["validated"] is True and c["entries"] == 2
-    bad = average_cost_check([62], close, w0=0)
-    assert bad["validated"] is False and bad["verdict"].startswith("Not validated")
-    assert average_cost_check([], close, w0=0)["entries"] == 0

@@ -73,12 +73,16 @@ def test_compute_payload(monkeypatch, tf, rng, start):
     r = svc.compute("TEST", df, session, daily, factors, rng=rng, tf=tf, intraday=tf != "1Day",
                     display_start=start_view, display_end=end_view, tp_atr=2.0, sl_atr=0.8)
     assert r["params"]["tp_atr"] == 2.0 and r["targets"]["short"]["spec"]["target_atr"] == 2.0
-    cc = r["targets"]["long"]["cost_check"]
-    assert cc["entries"] == r["targets"]["long"]["stats"]["signals"] and "verdict" in cc
-    assert len(r["lines"]["avg_cost"]) == (cc["entries"] + 1 if cc["entries"] else 0)
     assert r["timeframe"] == tf and r["window"]["bars"] >= min(svc.MIN_EVAL_BARS, len(df) - 1)
     assert {f["factor"] for f in r["relations"]} == set(FACTORS)
-    assert set(r["targets"]) == {"short", "long", "tp_short", "tp_long"}
+    assert set(r["targets"]) == {"short", "tp_short"}
+    rw = r["range_window"]
+    assert 0 < rw["bars"] <= r["window"]["bars"]
+    for t in r["targets"].values():
+        in_range = [s for s in t["signals"] if s["in_range"]]
+        assert all(s["time"] >= rw["start_time"] for s in in_range)
+        assert all(s["time"] < rw["start_time"] for s in t["signals"] if not s["in_range"])
+        assert t["range_stats"]["signals"] == len(in_range) and t["range_stats"]["bars"] == rw["bars"]
     bar_times = set(svc.et_epoch(df.index).tolist())
     for key, t in r["targets"].items():
         assert t["spec"]["key"] == key

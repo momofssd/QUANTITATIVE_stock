@@ -1,13 +1,19 @@
-/** "Entry & Take-Profit Analysis" card: progress, marker legend, entry + take-profit targets, relations, guide. */
+/**
+ * "Short-term BUY & SELL Analysis" card: progress, marker legend, current K, BUY + SELL cards (chart range + model
+ * check), the 30 most recent BUY and SELL decisions, factor relations, method.
+ */
 import { useEffect, useState } from "react";
 import { BLUE, GREEN, RED } from "../../chart/markers";
 import type { AnalysisApi } from "../../hooks/useAnalysis";
 import { TF_LABEL } from "../../config/timeframes";
 import type { TargetKey } from "../../types/api";
-import { DecisionStrip } from "./DecisionStrip";
+import { CurrentKPanel } from "./CurrentKPanel";
+import { DecisionTable } from "./DecisionTable";
 import { FactorRelations } from "./FactorRelations";
 import { ReadingGuide } from "./ReadingGuide";
 import { TargetCard } from "./TargetCard";
+
+const rangeLabel = (rng: string) => (rng === "CUSTOM" ? "custom range" : `${rng} range`);
 
 function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(Date.now());
@@ -20,24 +26,26 @@ function Elapsed({ since }: { since: number }) {
 
 interface Props {
   a: AnalysisApi;
-  /** The chart now shows another interval than the one analysed. */
+  /** The chart now shows another range / interval than the one analysed. */
   stale: boolean;
   onRetrain: () => void;
+  /** Live price from the quote stream (the current K line is live). */
+  livePrice: number | null;
 }
 
-export function AnalysisPanel({ a, stale, onRetrain }: Props) {
+export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
   const r = a.result;
   if (!r && !a.loading) return null;
   const card = (k: TargetKey) => (
     <TargetCard
-      t={r!.targets[k]} barUnit={r!.bar_unit} showMarkers={a.visible[k]} onToggle={(on) => a.toggle(k, on)}
+      t={r!.targets[k]} barUnit={r!.bar_unit} rangeWindow={r!.range_window} window={r!.window}
+      showMarkers={a.visible[k]} onToggle={(on) => a.toggle(k, on)}
       bracket={k === "short" ? {
         value: a.bracket,
         used: { tp: r!.params.tp_atr, sl: r!.params.sl_atr },
         ranges: { tp: r!.params.tp_range, sl: r!.params.sl_range },
         onChange: a.setBracket, onRetrain, busy: a.loading,
       } : undefined}
-      costLines={k === "long" ? { shown: a.visible.cost, onToggle: (on) => a.toggle("cost", on) } : undefined}
     />
   );
 
@@ -45,9 +53,9 @@ export function AnalysisPanel({ a, stale, onRetrain }: Props) {
     <section className="card analysis-card" id="analysis">
       <div className="card-title">
         <h2>
-          Entry &amp; Take-Profit Analysis{" "}
+          Short-term BUY &amp; SELL Analysis{" "}
           <small>
-            {r ? `${r.symbol} · ${TF_LABEL[r.timeframe]} K-lines · ${r.window.bars.toLocaleString()} bars ${r.window.start} → ${r.window.end} · as of ${r.asof}` : ""}
+            {r ? `${r.symbol} · ${rangeLabel(r.range)} · ${TF_LABEL[r.timeframe]} K-lines · chart range ${r.range_window.start} → ${r.range_window.end} (${r.range_window.bars.toLocaleString()} bars) · as of ${r.asof}` : ""}
           </small>
         </h2>
         <div className="ct-right">
@@ -72,8 +80,8 @@ export function AnalysisPanel({ a, stale, onRetrain }: Props) {
         <>
           <div className="ta-legend">
             Chart:
-            <span><b className="mark-chip mark-short">S</b><b className="mark-chip mark-long">L</b> entry ▲ below the bar</span>
-            <span><b className="mark-chip mark-tp_short">TS</b><b className="mark-chip mark-tp_long">TL</b> take-profit ▼ above the bar</span>
+            <span><b className="mark-chip mark-short">BUY</b> short-term entry ▲ below the bar</span>
+            <span><b className="mark-chip mark-tp_short">SELL</b> take profit ▼ above the bar</span>
             <span><i className="dot-o" style={{ background: GREEN }} />signal was right</span>
             <span><i className="dot-o" style={{ background: RED }} />wrong / expired</span>
             <span><i className="dot-o" style={{ background: BLUE }} />still open</span>
@@ -84,17 +92,20 @@ export function AnalysisPanel({ a, stale, onRetrain }: Props) {
           </div>
           {stale && (
             <div className="ta-stale">
-              These results were trained on <b>{TF_LABEL[r.timeframe]}</b> bars{r.extended ? " (extended hours)" : ""}, so
-              their markers are hidden on this chart.
+              These results were trained on <b>{rangeLabel(r.range)} · {TF_LABEL[r.timeframe]}</b>
+              {r.extended ? " (extended hours)" : ""}, not on the chart as shown now, so their markers are hidden.
               <button className="link" onClick={onRetrain}>Retrain for the current chart</button>
             </div>
           )}
-          <DecisionStrip r={r} />
+          <CurrentKPanel r={r} intraday={a.intraday} livePrice={livePrice} />
           <ReadingGuide />
-          <div className="ta-group">Entries</div>
-          <div className="ta-grid">{card("short")}{card("long")}</div>
-          <div className="ta-group">Take-profit</div>
-          <div className="ta-grid">{card("tp_short")}{card("tp_long")}</div>
+          <div className="ta-group">Short-term</div>
+          <div className="ta-grid">{card("short")}{card("tp_short")}</div>
+          <div className="ta-group">Most recent decisions</div>
+          <div className="ta-decisions-list">
+            <DecisionTable t={r.targets.short} barUnit={r.bar_unit} rangeStart={r.range_window.start} />
+            <DecisionTable t={r.targets.tp_short} barUnit={r.bar_unit} rangeStart={r.range_window.start} />
+          </div>
           <FactorRelations relations={r.relations} years={r.window.years} />
           <details className="ta-method">
             <summary>Method</summary>

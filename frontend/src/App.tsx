@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  buildAnalysisLines, buildMarkers, buildPriceLines, type AnalysisLineDef, type EntryMarker, type PriceLineDef,
+  buildMarkers, buildPriceLines, type EntryMarker, type PriceLineDef,
 } from "./chart/markers";
 import { AnalysisPanel } from "./components/analysis/AnalysisPanel";
 import { ChartCard } from "./components/chart/ChartCard";
@@ -37,7 +37,6 @@ import type { LiveMessage } from "./types/api";
 const POLL_TICK_MS = 2500;
 const NO_MARKERS: EntryMarker[] = [];
 const NO_LINES: PriceLineDef[] = [];
-const NO_ANALYSIS_LINES: AnalysisLineDef[] = [];
 const MINUTE_BAR_REFRESH_DELAY = 1500;
 
 export default function App() {
@@ -64,17 +63,17 @@ export default function App() {
   }, [runAnalysis, bracket, symbol, range, timeframe, extended, from, to]);
   const ar = analysis.result && analysis.result.symbol === symbol ? analysis.result : null;
   // Markers belong to the bars they were computed on: only draw them on the same interval.
-  const resultMatchesChart = !!ar && ar.timeframe === timeframe && (!ar.intraday || ar.extended === extended);
+  // The result belongs to the chart only for the same range, interval, extended-hours setting (and custom dates).
+  const q = analysis.query;
+  const resultMatchesChart = !!ar && !!q && q.range === range && ar.timeframe === timeframe
+    && (!ar.intraday || ar.extended === extended)
+    && (range !== "CUSTOM" || (q.start === from && (q.end ?? "") === (to ?? "")));
   const markers = useMemo(
     () => (ar && resultMatchesChart ? buildMarkers(ar, analysis.visible) : NO_MARKERS),
     [ar, resultMatchesChart, analysis.visible],
   );
   const priceLines = useMemo(
     () => (ar && resultMatchesChart ? buildPriceLines(ar, analysis.visible) : NO_LINES),
-    [ar, resultMatchesChart, analysis.visible],
-  );
-  const analysisLines = useMemo(
-    () => (ar && resultMatchesChart ? buildAnalysisLines(ar, analysis.visible) : NO_ANALYSIS_LINES),
     [ar, resultMatchesChart, analysis.visible],
   );
 
@@ -146,7 +145,7 @@ export default function App() {
             overlay={health && !health.configured ? { kind: "message", text: "Waiting for Alpaca credentials in .env." } : barsApi.overlay}
             busyNote={barsApi.busyNote} onNeedOlder={barsApi.loadOlder}
             onDateError={(msg) => (msg ? banner.show({ kind: "warn", message: msg }) : banner.clear())}
-            markers={markers} priceLines={priceLines} analysisLines={analysisLines}
+            markers={markers} priceLines={priceLines}
             analyzing={analysis.loading} onAnalyze={onAnalyze}
           />
           <aside className="side">
@@ -156,7 +155,10 @@ export default function App() {
           </aside>
         </div>
 
-        <AnalysisPanel a={analysis} stale={!!ar && !resultMatchesChart} onRetrain={onAnalyze} />
+        <AnalysisPanel
+          a={analysis} stale={!!ar && !resultMatchesChart} onRetrain={onAnalyze}
+          livePrice={quote.quote?.price ?? null}
+        />
         <HistoryTable payload={bars?.payload ?? null} version={tickVersion} resetKey={fitKey} />
         <SiteFooter />
       </main>

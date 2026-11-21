@@ -159,8 +159,7 @@ export type LiveMessage = StreamStatus | TickMessage | QuoteMessage | BarMessage
 
 // ---------------------------------------------------------------- entry-point analysis (GET /api/analysis/{symbol})
 
-export type TargetKey = "short" | "long" | "tp_short" | "tp_long";
-export type EntryKey = "short" | "long";
+export type TargetKey = "short" | "tp_short";
 export type Outcome = "target" | "stop" | "expired" | "pending";
 export type ExitReason = "target" | "trailing stop" | "take-profit signal" | "time limit" | "stop";
 
@@ -211,7 +210,11 @@ export interface EntrySignal {
   resolved_date: string | null;
   days: number | null;
   trade?: TradeView; // entries only
+  setup: SetupName;  // which rule-based setup the bar was in
+  in_range: boolean; // inside the chart's own range (vs only in the longer model-check window)
 }
+
+export type SetupName = "rebound" | "trend" | "top" | "";
 
 export interface CurrentSignal {
   date: string;
@@ -219,11 +222,14 @@ export interface CurrentSignal {
   prob: number;
   threshold: number;
   base_rate: number;
-  signal: boolean;
+  ml_signal: boolean;   // model alone (P >= threshold)
+  setup: SetupName;     // setup on the current K line
+  signal: boolean;      // BUY / SELL = model AND setup
   entry: number;
   atr: number;
   target: number;
   stop: number;
+  chase_limit: number | null; // BUY: don't enter above this
   horizon_days: number;
 }
 
@@ -237,6 +243,45 @@ export interface TargetStats {
   hits: number;
   hit_rate: number | null;
   folds: number;
+  setup_bars: number;            // bars in the setup within the window
+  setup_rate: number | null;     // hit rate of ALL setup bars (rules only, no model)
+  by_setup: Record<string, { resolved: number; hits: number; hit_rate: number | null }>;
+}
+
+/** Outcomes inside the chart's own range. */
+export interface RangeStats {
+  bars: number;
+  signals: number;
+  resolved: number;
+  hits: number;
+  hit_rate: number | null;
+  base_rate: number | null;
+  decided_bars: number;
+  setup_bars: number;
+  setup_rate: number | null;
+}
+
+export interface SetupExplain {
+  active: boolean;
+  rule: string;
+  checks: { label: string; ok: boolean }[];
+}
+
+/** Today's 5-minute action vs the BUY / SELL decision. */
+export interface IntradayCheck {
+  available: boolean;
+  reason?: string;
+  session?: string;
+  asof?: string;
+  bars?: number;
+  last?: number;
+  vwap?: number;
+  day_high?: number;
+  day_low?: number;
+  day_change_pct?: number | null;
+  checks?: { id: string; label: string; detail: string; signal: -1 | 0 | 1 }[];
+  buy?: { score: number; verdict: "supports" | "mixed" | "against" };
+  sell?: { score: number; verdict: "supports" | "mixed" | "against" };
 }
 
 export interface TradeSummary {
@@ -252,28 +297,16 @@ export interface TradeSummary {
 }
 
 export interface TradesBlock {
-  signals: TradeSummary;    // trading the marked entries
-  every_day: TradeSummary;  // same exits, entering on every day (baseline)
+  signals: TradeSummary;    // trading the marked entries (model-check window)
+  every_day: TradeSummary;  // same exits, entering on every bar (baseline)
   buy_hold_pct: number;
+  range_signals: TradeSummary;    // the same, chart range only
+  range_every_day: TradeSummary;
+  range_buy_hold_pct: number;
   rules: {
     stop_atr: number; target_atr: number; trail_after_atr: number; trail_atr: number; horizon: number;
     horizon_mode: "bars" | "sessions"; atr_basis: "bar" | "daily"; exit_with: string;
   };
-}
-
-/** Long-term validation: average cost of all long-term buys (equal dollars each) vs the SMA 60. */
-export interface CostCheck {
-  sma_len: number;
-  entries: number;
-  avg_cost: number | null;
-  sma_now: number | null;
-  validated: boolean | null;
-  discount_pct: number | null;   // (SMA - avg cost) / SMA, %
-  held_below?: number;           // checkpoints where the running average cost was below that day's SMA
-  dca_avg_cost: number | null;   // same dollars on EVERY bar of the window
-  vs_dca_pct?: number | null;    // signal average cost vs that, %
-  checkpoints: { time: number; date: string; price: number; avg_cost: number; sma: number | null }[];
-  verdict: string;
 }
 
 export interface TargetResult {
@@ -281,8 +314,8 @@ export interface TargetResult {
   current: CurrentSignal | null;
   signals: EntrySignal[];
   stats: TargetStats;
+  range_stats: RangeStats;
   trades: TradesBlock | null;
-  cost_check: CostCheck | null;
   open_trade: EntrySignal | null;
   importance: { group: string; weight: number }[];
 }
@@ -305,6 +338,9 @@ export interface AnalysisResult {
   extended: boolean;
   bar_unit: string;   // "trading days", "hourly bars", ...
   asof: string;
+  /** The chart's own range (what the markers, range stats and highlighted decisions cover). */
+  range_window: { start: string; end: string; bars: number; start_time: number };
+  /** The longer model-check window (>= 1,260 bars) used for the verdict and AUC. */
   window: { start: string; end: string; bars: number; train_bars: number; retrain_every: number; years: number };
   method: {
     model: string; training: string; signal_rule: string; features: number; atr: string; factor_alignment: string;
@@ -312,7 +348,8 @@ export interface AnalysisResult {
   sources: { stock: string; factors: string; factor_tickers: Record<string, string> };
   params: { tp_atr: number; sl_atr: number; tp_range: [number, number]; sl_range: [number, number] };
   targets: Record<TargetKey, TargetResult>;
-  /** Chart lines for the long-term cost check (times = chart bar times). */
-  lines: { sma?: { time: number; value: number }[]; avg_cost?: { time: number; value: number }[]; sma_len?: number };
+  setups_now: Record<"rebound" | "trend" | "top", SetupExplain>;
+  chase_atr: number;
+  intraday_check: IntradayCheck;
   relations: FactorRelation[];
 }

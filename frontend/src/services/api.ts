@@ -1,5 +1,5 @@
 /** REST client for the FastAPI backend. Errors carry the HTTP status and the server's `detail` message. */
-import type { AnalysisResult, Asset, BarsPayload, Clock, Health, Quote } from "../types/api";
+import type { AnalysisResult, Asset, BarsPayload, Clock, Health, IntradayCheck, Quote } from "../types/api";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -70,6 +70,8 @@ export const api = {
   /** Entry / take-profit analysis retrained on the chart's range + interval (~5-30 s). */
   analysis: (symbol: string, query: AnalysisQuery, signal?: AbortSignal) =>
     get<AnalysisResult>(`/api/analysis/${encodeURIComponent(symbol)}`, { ...query }, signal),
+  /** Today's 5-minute check for the current K line (cheap). */
+  intraday: (symbol: string) => get<IntradayCheck>(`/api/analysis/${encodeURIComponent(symbol)}/intraday`),
 };
 
 export const isAbort = (e: unknown) => (e as Error)?.name === "AbortError";

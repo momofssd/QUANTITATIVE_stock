@@ -1,19 +1,16 @@
 /**
- * One analysis target - an entry (short / long) or a take-profit (short / long):
- * reliability verdict, today's signal, out-of-sample record, trade results (entries), recent signals, drivers.
- *   short-term entry: profit-take / stop-loss editor (daily ATR), "justified" wording, bracket-order backtest
- *   long-term entry:  average cost of all long-term buys vs SMA 60 (validation)
+ * One analysis target - BUY (short-term entry) or SELL (take profit):
+ *   This chart range  decisions + outcomes for the bars on the chart (what the markers show), trade results (BUY)
+ *   Model check       reliability verdict over the longer window (>= 1,260 bars), AUC, by setup, trade backtest
+ * plus the profit-take / stop-loss editor (BUY), the open trade, the marker toggle and the drivers.
+ * The 30 most recent decisions are listed below the cards (DecisionTable).
  */
 import { useEffect, useState } from "react";
-import { COST_COLOR, EXIT_LABEL, MARK, OUTCOME_COLOR, outcomeLabel, SMA_CHECK_COLOR } from "../../chart/markers";
+import { EXIT_LABEL, MARK, SETUP_LABEL } from "../../chart/markers";
 import type { Bracket } from "../../hooks/useAnalysis";
 import { price } from "../../lib/format";
-import type { CostCheck, ExitReason, TargetResult, TradeSummary, TradeView } from "../../types/api";
-
-const pct = (v: number | null | undefined, d = 0) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(d)}%`);
-const signedPct = (v: number | null | undefined, d = 2) =>
-  v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`;
-const cls = (v: number | null | undefined) => (v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down");
+import type { AnalysisResult, ExitReason, RangeStats, TargetResult, TradeSummary } from "../../types/api";
+import { dirCls, left, pct, rule, signedPct } from "./util";
 
 export interface BracketEditor {
   value: Bracket;               // what the next retrain will use
@@ -27,49 +24,11 @@ export interface BracketEditor {
 interface Props {
   t: TargetResult;
   barUnit: string; // "trading days", "hourly bars", ...
+  rangeWindow: AnalysisResult["range_window"];
+  window: AnalysisResult["window"];
   showMarkers: boolean;
   onToggle: (on: boolean) => void;
-  bracket?: BracketEditor;                                    // short-term entry only
-  costLines?: { shown: boolean; onToggle: (on: boolean) => void }; // long-term entry only
-}
-
-function rule(t: TargetResult, unit: string): string {
-  const s = t.spec;
-  const atrName = s.atr_basis === "daily" ? "daily ATR" : "ATR";
-  const window = s.horizon_mode === "sessions"
-    ? `${s.horizon} trading sessions`
-    : unit.endsWith("bars") ? `${s.horizon} × ${unit}` : `${s.horizon} ${unit}`;
-  if (t.spec.key === "short") {
-    return `Profit-take +${s.target_atr}× ${atrName} before stop-loss −${s.stop_atr}× ${atrName} within ${window}`;
-  }
-  return s.direction === "up"
-    ? `+${s.target_atr} ${atrName} before −${s.stop_atr} ${atrName} within ${window}`
-    : `−${s.target_atr} ${atrName} (pullback) before +${s.stop_atr} ${atrName} within ${window}`;
-}
-
-/** "3d" on daily, "3w" on weekly, "3 bars" on intraday intervals. */
-function span(n: number, unit: string): string {
-  if (unit === "trading days") return `${n}d`;
-  if (unit === "weeks") return `${n}w`;
-  return `${n} bar${n === 1 ? "" : "s"}`;
-}
-
-function left(tr: TradeView, unit: string): string {
-  const n = tr.days_left ?? 0;
-  return tr.left_unit === "sessions" ? `${n} session${n === 1 ? "" : "s"}` : span(n, unit);
-}
-
-function TradeCell({ tr, unit }: { tr?: TradeView; unit: string }) {
-  if (!tr) return <td className="l">—</td>;
-  if (tr.status === "open") {
-    return <td className="l">Open <span className={cls(tr.return_pct)}>{signedPct(tr.return_pct, 1)}</span> · {left(tr, unit)} left</td>;
-  }
-  return (
-    <td className="l">
-      <span className={cls(tr.return_pct)}><b>{signedPct(tr.return_pct, 1)}</b></span>{" "}
-      {EXIT_LABEL[tr.reason as ExitReason]} ({span(tr.days, unit)})
-    </td>
-  );
+  bracket?: BracketEditor;      // BUY only
 }
 
 function BracketForm({ b }: { b: BracketEditor }) {
@@ -110,102 +69,148 @@ function BracketForm({ b }: { b: BracketEditor }) {
   );
 }
 
-function TradeResults({ t, unit }: { t: TargetResult; unit: string }) {
-  const tb = t.trades;
-  if (!tb) return null;
-  const a: TradeSummary = tb.signals;
-  const e: TradeSummary = tb.every_day;
-  const r = tb.rules;
-  const bracketOnly = r.trail_after_atr <= 0 && !r.exit_with;
-  const reasons = a.reasons ? (Object.entries(a.reasons) as [ExitReason, number][]).filter(([, n]) => n > 0) : [];
-  const beat = a.avg_return_pct !== undefined && e.avg_return_pct !== undefined ? a.avg_return_pct > e.avg_return_pct : null;
+/** Signal entries vs entering on any bar, same exits. */
+function TradeTable({ a, e }: { a: TradeSummary; e: TradeSummary }) {
+  if (a.trades === 0 && e.trades === 0) return <p className="ta-note">No closed trades yet.</p>;
+  return (
+    <div className="table-scroll">
+      <table className="grid ta-trades">
+        <thead>
+          <tr><th className="l" /><th>Trades</th><th>Win rate</th><th>Avg / trade</th><th>Profit factor</th><th>Avg bars held</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className="l"><b>BUY entries</b></td><td>{a.trades}</td><td>{pct(a.win_rate)}</td>
+            <td className={dirCls(a.avg_return_pct)}><b>{signedPct(a.avg_return_pct)}</b></td>
+            <td>{a.profit_factor?.toFixed(2) ?? "—"}</td><td>{a.avg_days ?? "—"}</td>
+          </tr>
+          <tr className="muted-row">
+            <td className="l" title="Same exit rules, entering at every bar's close">Any-bar entry</td><td>{e.trades}</td>
+            <td>{pct(e.win_rate)}</td><td className={dirCls(e.avg_return_pct)}>{signedPct(e.avg_return_pct)}</td>
+            <td>{e.profit_factor?.toFixed(2) ?? "—"}</td><td>{e.avg_days ?? "—"}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ExitRule({ t, unit }: { t: TargetResult; unit: string }) {
+  const r = t.trades?.rules;
+  if (!r) return null;
   const window = r.horizon_mode === "sessions" ? `${r.horizon} trading sessions` : `${r.horizon} ${unit}`;
   return (
-    <>
-      <div className="ta-section">Trading these entries · backtest</div>
-      <div className="ta-exit-rule">
-        {bracketOnly
-          ? <>Bracket order: sell at the profit-take (+{r.target_atr}× ATR), at the stop-loss (−{r.stop_atr}× ATR), or at the
-            close after {window}.</>
-          : <>Exit at the first of: stop −{r.stop_atr} ATR · target +{r.target_atr} ATR · trailing stop {r.trail_atr} ATR
-            below the highest close once up {r.trail_after_atr} ATR · take-profit signal while in profit · {window}.</>}
+    <div className="ta-exit-rule">
+      Each BUY is sold at the first of: profit-take (+{r.target_atr}× ATR) · stop-loss (−{r.stop_atr}× ATR)
+      {r.trail_after_atr > 0 && <> · trailing stop {r.trail_atr} ATR below the highest close once up {r.trail_after_atr} ATR</>}
+      {r.exit_with && <> · a SELL signal while the trade is in profit</>} · the close after {window}.
+    </div>
+  );
+}
+
+/** Decisions, hit rate, setup-only and any-bar rates for a block of bars. */
+function StatsRow({ isBuy, signals, hitRate, baseRate, setupRate, auc }: {
+  isBuy: boolean; signals: number; hitRate: number | null; baseRate: number | null; setupRate: number | null;
+  auc?: number | null;
+}) {
+  return (
+    <div className={`ta-stats ${auc === undefined ? "four" : ""}`}>
+      <div><label>{isBuy ? "BUY" : "SELL"} decisions</label><b>{signals}</b></div>
+      <div>
+        <label>{isBuy ? "Justified" : "Hit rate"}</label>
+        <b className={hitRate !== null && baseRate !== null && hitRate > baseRate ? "up" : ""}>{pct(hitRate)}</b>
       </div>
-      {a.trades > 0 ? (
-        <table className="grid ta-trades">
-          <thead>
-            <tr><th className="l" /><th>Trades</th><th>Win rate</th><th>Avg / trade</th><th>Profit factor</th><th>Avg bars held</th></tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td className="l"><b>Signal entries</b></td><td>{a.trades}</td><td>{pct(a.win_rate)}</td>
-              <td className={cls(a.avg_return_pct)}><b>{signedPct(a.avg_return_pct)}</b></td>
-              <td>{a.profit_factor?.toFixed(2) ?? "—"}</td><td>{a.avg_days}</td>
-            </tr>
-            <tr className="muted-row">
-              <td className="l" title="Same exit rules, entering at every bar's close">Any-bar entry</td><td>{e.trades}</td>
-              <td>{pct(e.win_rate)}</td><td className={cls(e.avg_return_pct)}>{signedPct(e.avg_return_pct)}</td>
-              <td>{e.profit_factor?.toFixed(2) ?? "—"}</td><td>{e.avg_days}</td>
-            </tr>
-          </tbody>
-        </table>
-      ) : <p className="ta-note">No closed trades yet.</p>}
-      {beat !== null && a.trades > 0 && (
-        <div className={`ta-tradecheck ${beat ? "ok" : "warn"}`}>
-          {beat
-            ? "Trading the signals beat entering on any bar with the same exits."
-            : "Trading the signals did NOT beat entering on any bar with the same exits - the timing added no profit here."}
-        </div>
+      <div title="Every bar in the setup, without the model"><label>Setup only</label><b>{pct(setupRate)}</b></div>
+      <div title="Every bar"><label>Any bar</label><b>{pct(baseRate)}</b></div>
+      {auc !== undefined && <div><label>AUC</label><b>{auc?.toFixed(2) ?? "—"}</b></div>}
+    </div>
+  );
+}
+
+function RangeBlock({ t, rs, rw, isBuy }: { t: TargetResult; rs: RangeStats; rw: Props["rangeWindow"]; isBuy: boolean }) {
+  const tb = t.trades;
+  const pending = rs.signals - rs.resolved;
+  const what = isBuy ? "the profit-take was reached before the stop-loss" : "the pullback came before a rise";
+  return (
+    <>
+      <div className="ta-section">This chart range · {rw.start} → {rw.end} · {rw.bars.toLocaleString()} bars</div>
+      <StatsRow isBuy={isBuy} signals={rs.signals} hitRate={rs.hit_rate} baseRate={rs.base_rate} setupRate={rs.setup_rate} />
+      <p className="ta-note">
+        {rs.signals === 0
+          ? <>No {isBuy ? "BUY" : "SELL"} decision inside this range (a decision needs the setup <b>and</b> the model;
+              at most one per cooldown).</>
+          : <>{isBuy ? "Justified" : "Hit rate"} = {what} within 5 trading sessions: {rs.hits} of {rs.resolved} decided
+              {pending > 0 && <> · {pending} still open (needs 5 more sessions)</>}.</>}
+        {" "}Setup only / Any bar: {rs.setup_bars.toLocaleString()} setup bars / {rs.decided_bars.toLocaleString()} bars
+        with a known outcome{rs.decided_bars < rs.bars && <> (the last 5 sessions are not decided yet)</>}.
+      </p>
+      {isBuy && tb && (
+        <>
+          <TradeTable a={tb.range_signals} e={tb.range_every_day} />
+          <p className="ta-note">Buy &amp; hold over this range: {signedPct(tb.range_buy_hold_pct, 1)}.</p>
+        </>
       )}
-      {reasons.length > 0 && (
-        <div className="ta-reasons">Exits: {reasons.map(([k, n]) => <span key={k}>{EXIT_LABEL[k]} <b>{n}</b></span>)}</div>
-      )}
-      <p className="ta-note">Per-trade returns before commissions and slippage. Buy &amp; hold over the same window: {signedPct(tb.buy_hold_pct, 1)}.</p>
     </>
   );
 }
 
-function CostCheckBlock({ c, lines }: { c: CostCheck; lines?: Props["costLines"] }) {
-  const cheaper = c.vs_dca_pct !== null && c.vs_dca_pct !== undefined ? c.vs_dca_pct < 0 : null;
+function ModelBlock({ t, w, isBuy, same }: { t: TargetResult; w: Props["window"]; isBuy: boolean; same: boolean }) {
+  const s = t.stats;
+  const tb = t.trades;
+  const a = tb?.signals;
+  const e = tb?.every_day;
+  const reasons = a?.reasons ? (Object.entries(a.reasons) as [ExitReason, number][]).filter(([, n]) => n > 0) : [];
+  const beat = a?.avg_return_pct !== undefined && e?.avg_return_pct !== undefined && a.avg_return_pct !== null
+    && e.avg_return_pct !== null ? a.avg_return_pct > e.avg_return_pct : null;
   return (
     <>
-      <div className="ta-section">Validation · average cost vs SMA {c.sma_len}</div>
-      <div className={`ta-verdict ${c.validated ? "ok" : "warn"}`}>
-        <b>{c.validated === null ? "Not checked" : c.validated ? "Validated" : "Not validated"}</b>
-        {" — "}{c.verdict.replace(/^(Validated|Not validated): /, "")}
+      <div className="ta-section">
+        Model check · {same ? "same bars as the chart range" : <>last {w.bars.toLocaleString()} bars · {w.start} → {w.end}</>}
       </div>
-      {c.entries > 0 && (
+      <div className={`ta-verdict ${s.reliable ? "ok" : "warn"}`}>
+        <b>{s.reliable ? "Edge found" : "No reliable edge"}</b> — {s.verdict.replace(/^(Edge found|No reliable edge): /, "")}
+      </div>
+      {!same && <StatsRow isBuy={isBuy} signals={s.signals} hitRate={s.hit_rate} baseRate={s.base_rate}
+        setupRate={s.setup_rate} auc={s.auc} />}
+      <p className="ta-note">
+        {same && <>AUC <b>{s.auc?.toFixed(2) ?? "—"}</b>. </>}
+        {!same && <>Judged on at least 1,260 bars so the verdict is not based on a handful of decisions
+          ({s.hits} of {s.resolved} decided). </>}
+        {Object.keys(s.by_setup).length > 0 && (
+          <>By setup: {Object.entries(s.by_setup).map(([k, v]) => (
+            <span key={k} className="ta-bysetup">{SETUP_LABEL[k as keyof typeof SETUP_LABEL] ?? k} {v.hits}/{v.resolved}{" "}
+              ({pct(v.hit_rate)})</span>
+          ))}</>
+        )}
+      </p>
+      {isBuy && a && e && (
         <>
-          <div className="ta-stats">
-            <div><label>Long-term buys</label><b>{c.entries}</b></div>
-            <div><label>Average cost</label><b style={{ color: COST_COLOR }}>{price(c.avg_cost)}</b></div>
-            <div><label>SMA {c.sma_len} now</label><b style={{ color: SMA_CHECK_COLOR }}>{price(c.sma_now)}</b></div>
-            <div><label>Cost vs SMA</label><b className={c.validated ? "up" : "down"}>{signedPct(c.discount_pct !== null ? -c.discount_pct : null, 1)}</b></div>
-          </div>
+          {!same && <TradeTable a={a} e={e} />}
+          {beat !== null && a.trades > 0 && (
+            <div className={`ta-tradecheck ${beat ? "ok" : "warn"}`}>
+              {beat
+                ? "Trading the BUYs beat entering on any bar with the same exits."
+                : "Trading the BUYs did NOT beat entering on any bar with the same exits - the timing added no profit here."}
+            </div>
+          )}
+          {reasons.length > 0 && (
+            <div className="ta-reasons">Exits: {reasons.map(([k, n]) => <span key={k}>{EXIT_LABEL[k]} <b>{n}</b></span>)}</div>
+          )}
           <p className="ta-note">
-            Equal dollars per buy. The running average cost was below that day's SMA {c.sma_len} after {c.held_below ?? 0} of {c.entries} buys.
-            {cheaper !== null && (
-              <> Buying the same amount on every bar would average {price(c.dca_avg_cost)}: the long-term signals bought{" "}
-                <b className={cheaper ? "up" : "down"}>{Math.abs(c.vs_dca_pct!).toFixed(1)}% {cheaper ? "cheaper" : "dearer"}</b>.</>
-            )}
+            Per-trade returns before commissions and slippage.
+            {!same && <> Buy &amp; hold over this window: {signedPct(tb!.buy_hold_pct, 1)}.</>}
           </p>
         </>
       )}
-      {lines && (
-        <label className="check ta-toggle">
-          <input type="checkbox" checked={lines.shown} onChange={(e) => lines.onToggle(e.target.checked)} />
-          Show average cost (<span style={{ color: COST_COLOR }}>━</span>) and SMA {c.sma_len} (<span style={{ color: SMA_CHECK_COLOR }}>┅</span>) on the chart
-        </label>
-      )}
     </>
   );
 }
 
-export function TargetCard({ t, barUnit, showMarkers, onToggle, bracket, costLines }: Props) {
-  const { spec, current: c, stats: s } = t;
-  const isEntry = spec.kind === "entry";
-  const isShort = spec.key === "short";
-  const recent = t.signals.slice(-6).reverse();
+export function TargetCard({ t, barUnit, rangeWindow, window, showMarkers, onToggle, bracket }: Props) {
+  const { spec } = t;
+  const isBuy = spec.kind === "entry";
   const ot = t.open_trade?.trade;
+  const same = rangeWindow.bars >= window.bars;
   return (
     <div className="ta-card">
       <div className="ta-head">
@@ -214,103 +219,23 @@ export function TargetCard({ t, barUnit, showMarkers, onToggle, bracket, costLin
       </div>
 
       {bracket && <BracketForm b={bracket} />}
+      {isBuy && <ExitRule t={t} unit={barUnit} />}
 
-      <div className={`ta-verdict ${s.reliable ? "ok" : "warn"}`}>
-        <b>{s.reliable ? "Edge found" : "No reliable edge"}</b> — {s.verdict.replace(/^(Edge found|No reliable edge): /, "")}
-      </div>
-
-      {c && (
-        <div className="ta-today">
-          <div className={`ta-signal ${c.signal ? (s.reliable ? "on" : "on weak") : "off"} ${isEntry ? "" : "tp"}`}>
-            {c.signal ? (isEntry ? "ENTRY SIGNAL" : "TAKE PROFIT") : (isEntry ? "NO ENTRY" : "HOLD")}
-            <small>as of {c.date} close</small>
-          </div>
-          <div className="ta-prob">
-            <div className="ta-prob-bar" title={`Threshold ${pct(c.threshold)}`}>
-              <i style={{ width: `${Math.min(100, c.prob * 100)}%` }} />
-              <em style={{ left: `${Math.min(100, c.threshold * 100)}%` }} />
-            </div>
-            <div className="ta-prob-txt">
-              P({isShort ? "profit-take first" : isEntry ? "rise first" : "pullback first"}) <b>{pct(c.prob)}</b> · threshold{" "}
-              {pct(c.threshold)} · base rate {pct(c.base_rate)}
-            </div>
-          </div>
-          <table className="kv ta-levels">
-            <tbody>
-              <tr>
-                <th>{isEntry ? "Entry (close)" : "Price (close)"}</th><td>{price(c.entry)}</td>
-                <th>{spec.atr_basis === "daily" ? "Daily ATR(14)" : "ATR(14)"}</th><td>{price(c.atr)}</td>
-              </tr>
-              <tr>
-                <th>{isShort ? "Profit-take" : isEntry ? "Target" : "Pullback to"}</th><td className={isEntry ? "up" : "down"}>{price(c.target)}</td>
-                <th>{isShort ? "Stop-loss" : isEntry ? "Stop" : "Invalid above"}</th><td className={isEntry ? "down" : "up"}>{price(c.stop)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {isEntry && ot?.status === "open" && t.open_trade && (
+      {isBuy && ot?.status === "open" && t.open_trade && (
         <div className="ta-open">
           <b>Open trade</b> from {t.open_trade.date} at {price(t.open_trade.entry)}:{" "}
-          <span className={cls(ot.return_pct)}>{signedPct(ot.return_pct, 1)}</span> · {ot.trailing ? "trailing stop" : isShort ? "stop-loss" : "stop"}{" "}
-          {price(ot.stop)} · {isShort ? "profit-take" : "target"} {price(ot.target)} · {left(ot, barUnit)} left
+          <span className={dirCls(ot.return_pct)}>{signedPct(ot.return_pct, 1)}</span> · {ot.trailing ? "trailing stop" : "stop-loss"}{" "}
+          {price(ot.stop)} · profit-take {price(ot.target)} · {left(ot, barUnit)} left
         </div>
       )}
 
-      {t.cost_check && <CostCheckBlock c={t.cost_check} lines={costLines} />}
-
-      <div className="ta-section">Out-of-sample record (analysed window)</div>
-      <div className="ta-stats">
-        <div><label>Signals</label><b>{s.signals}</b></div>
-        <div>
-          <label>{isShort ? "Justified" : "Hit rate"}</label>
-          <b className={s.hit_rate !== null && s.base_rate !== null && s.hit_rate > s.base_rate ? "up" : ""}>{pct(s.hit_rate)}</b>
-        </div>
-        <div><label>Base rate</label><b>{pct(s.base_rate)}</b></div>
-        <div><label>AUC</label><b>{s.auc?.toFixed(2) ?? "—"}</b></div>
-      </div>
-      {isShort && (
-        <p className="ta-note">
-          Justified = the price reached the profit-take before the stop-loss within the window ({s.hits} of {s.resolved} decided
-          entries). Base rate = the same for an entry on any bar.
-        </p>
-      )}
-
-      {isEntry && <TradeResults t={t} unit={barUnit} />}
+      <RangeBlock t={t} rs={t.range_stats} rw={rangeWindow} isBuy={isBuy} />
+      <ModelBlock t={t} w={window} isBuy={isBuy} same={same} />
 
       <label className="check ta-toggle">
         <input type="checkbox" checked={showMarkers} onChange={(e) => onToggle(e.target.checked)} />
-        Show {MARK[spec.key].text} markers on the chart{!s.reliable && " (no reliable edge here)"}
+        Show {MARK[spec.key].text} markers on the chart{!t.stats.reliable && " (no reliable edge here)"}
       </label>
-
-      {recent.length > 0 && (
-        <>
-          <div className="ta-section">Latest signals</div>
-          <table className="grid ta-recent">
-            <thead>
-              <tr>
-                <th className="l">Date</th><th>P</th><th>{isEntry ? "Entry" : "Price"}</th>
-                {isShort && <><th>Profit-take</th><th>Stop-loss</th></>}
-                <th className="l">{isShort ? "Justified?" : "Signal outcome"}</th>{isEntry && <th className="l">Trade exit</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((e) => (
-                <tr key={e.time}>
-                  <td className="l">{e.date}</td><td>{pct(e.prob)}</td><td>{price(e.entry)}</td>
-                  {isShort && <><td className="up">{price(e.target)}</td><td className="down">{price(e.stop)}</td></>}
-                  <td className="l">
-                    <i className="dot-o" style={{ background: OUTCOME_COLOR[e.outcome] }} />
-                    {outcomeLabel(spec, e.outcome)}{e.days !== null && e.outcome !== "pending" ? ` (${span(e.days, barUnit)})` : ""}
-                  </td>
-                  {isEntry && <TradeCell tr={e.trade} unit={barUnit} />}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
 
       {t.importance.length > 0 && (
         <>

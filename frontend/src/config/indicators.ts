@@ -44,7 +44,7 @@ export const INDICATOR_ROWS: IndicatorRow[] = [
   { key: "sma3", label: "SMA", color: "#8e44ad", fields: [["sma", 2]] },
   { key: "ema1", label: "EMA", color: "#16a085", fields: [["ema", 0]] },
   { key: "ema2", label: "EMA", color: "#c0392b", fields: [["ema", 1]] },
-  { key: "bb", label: "Bollinger", color: "#7f8c8d", fields: [["bb", 0], ["bb", 1, true]], hint: "length, σ" },
+  { key: "bb", label: "Bollinger", color: "#0097a7", fields: [["bb", 0], ["bb", 1, true]], hint: "length, σ" },
   { key: "vwap", label: "VWAP", color: "#e84393", hint: "intraday only" },
   { section: "Lower panes" },
   { key: "volume", label: "Volume" },

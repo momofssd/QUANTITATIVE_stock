@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MarkerVisibility } from "../chart/markers";
 import { load, save } from "../lib/storage";
 import { api, isAbort, type AnalysisQuery, type ApiError } from "../services/api";
-import type { AnalysisResult } from "../types/api";
+import type { AnalysisResult, IntradayCheck } from "../types/api";
 
 export interface AnalysisInputs extends AnalysisQuery {
   symbol: string;
@@ -19,14 +19,16 @@ export interface Bracket {
 }
 
 export const DEFAULT_BRACKET: Bracket = { tp: 1.5, sl: 1.0 };
+const INTRADAY_REFRESH_MS = 60_000;
 
 export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [query, setQuery] = useState<AnalysisInputs | null>(null); // what `result` was trained on
   const [loading, setLoading] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [bracket, setBracketState] = useState<Bracket>(() => load("bracket", DEFAULT_BRACKET));
   const [visible, setVisible] = useState<MarkerVisibility>({
-    short: true, long: true, tp_short: true, tp_long: true, exits: true, cost: true,
+    short: true, tp_short: true, exits: true,
   });
   const ctrl = useRef<AbortController | null>(null);
 
@@ -43,7 +45,8 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     save("bracket", b);
   }, []);
 
-  const run = useCallback(async ({ symbol: sym, ...query }: AnalysisInputs, b: Bracket) => {
+  const run = useCallback(async (inputs: AnalysisInputs, b: Bracket) => {
+    const { symbol: sym, ...query } = inputs;
     ctrl.current?.abort();
     const c = new AbortController();
     ctrl.current = c;
@@ -52,11 +55,9 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     try {
       const r = await api.analysis(sym, { ...query, tp_atr: b.tp, sl_atr: b.sl, refresh: true }, c.signal);
       setResult(r);
-      // Entries (S / L) and the cost lines are always drawn; take-profit markers only where that model is reliable.
-      setVisible({
-        short: true, long: true, exits: true, cost: true,
-        tp_short: r.targets.tp_short.stats.reliable, tp_long: r.targets.tp_long.stats.reliable,
-      });
+      setQuery(inputs);
+      // BUY markers are always drawn; SELL markers only where the take-profit model proved reliable.
+      setVisible({ short: true, exits: true, tp_short: r.targets.tp_short.stats.reliable });
     } catch (e) {
       if (!isAbort(e)) onError(e as ApiError);
     } finally {
@@ -66,7 +67,24 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
 
   const toggle = useCallback((key: keyof MarkerVisibility, on: boolean) => setVisible((v) => ({ ...v, [key]: on })), []);
 
-  return { result, loading, startedAt, visible, bracket, setBracket, run, clear, toggle };
+  // The current K line is live: refresh today's 5-minute check every minute while results are shown.
+  const [intraday, setIntraday] = useState<IntradayCheck | null>(null);
+  useEffect(() => setIntraday(result?.intraday_check ?? null), [result]);
+  useEffect(() => {
+    if (!result) return;
+    const sym = result.symbol;
+    const id = window.setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        setIntraday(await api.intraday(sym));
+      } catch {
+        /* keep the last check */
+      }
+    }, INTRADAY_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [result]);
+
+  return { result, query, loading, startedAt, visible, bracket, setBracket, run, clear, toggle, intraday };
 }
 
 export type AnalysisApi = ReturnType<typeof useAnalysis>;

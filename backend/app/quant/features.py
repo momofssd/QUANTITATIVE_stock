@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .setups import compute_setups
 from .targets import atr as atr_fn
 
 # Feature -> group shown in the "what drives the model" breakdown.
@@ -65,6 +66,14 @@ def stock_features(stock: pd.DataFrame) -> pd.DataFrame:
     cols |= _g("Stock volatility & volume",
                atr_pct=a / c, vol_ratio=r1.rolling(10).std() / r1.rolling(60).std(),
                volume_z=_zscore(np.log(v.replace(0, np.nan)), 20))
+    # Is falling momentum easing / rising momentum fading? Plus the rule-based setup flags (quant/setups.py).
+    s = compute_setups(stock)
+    cols |= _g("Momentum shift & setups",
+               **{k: s[k] for k in ("macd_hist_chg", "macd_hist_chg3", "rsi_chg_3", "adx", "di_diff", "lower_wick",
+                                    "upper_wick", "down_streak", "up_streak", "bars_since_high20",
+                                    "bars_since_low20")},
+               setup_rebound=s["rebound"].astype(float), setup_trend=s["trend"].astype(float),
+               setup_top=s["top"].astype(float))
     return pd.DataFrame(cols, index=stock.index)
 
 

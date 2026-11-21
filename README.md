@@ -1,7 +1,7 @@
 # Quant Trading Model V3 — Web
 
 A quote and chart research app on Alpaca market data. It shows historical and live candlestick (K-line) charts with indicators.
-A **Find entry points** button retrains a quantitative analysis on the chart's own K-lines, for any range and interval. It marks short-term and long-term entries and take-profit points, using factors from Yahoo Finance and validated walk-forward. The app does not place trades.
+A **Find entry points** button retrains a quantitative analysis on the chart's own K-lines, for any range and interval. It marks short-term BUY (entry) and SELL (take-profit) points, with an entry plan for the current K line, using factors from Yahoo Finance and validated walk-forward. The app does not place trades.
 
 - **Backend:** Python / FastAPI (`backend/`)
 - **Frontend:** React 18 + TypeScript + Vite (`frontend/`)

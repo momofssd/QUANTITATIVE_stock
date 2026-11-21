@@ -4,71 +4,70 @@ export function ReadingGuide() {
     <details className="ta-method ta-guide">
       <summary>How to read this</summary>
       <dl>
-        <dt>Latest K line decision</dt>
+        <dt>BUY</dt>
         <dd>
-          What each model decides for the newest analysed candle, drawn on it: <b>S BUY / L BUY</b> (black up-arrow),
-          <b> TS SELL / TL SELL</b> (black down-arrow), or <b>–</b> (grey dot) for no entry / hold. A <b>?</b> means that
-          model had no reliable edge for this stock. Historical markers skip bars inside a cooldown after a signal; the
-          latest decision is always shown.
+          A short-term entry. Two things must agree: the bar is in a <b>Rebound</b> setup (price has been falling and the
+          selling momentum is easing - MACD histogram rising below zero, RSI turning up from a low, a higher low or long
+          lower wick) or a <b>Trend</b> setup (close &gt; SMA20 &gt; SMA50, both rising, ADX ≥ 20), <b>and</b> the
+          machine-learning model expects the price to reach the profit-take before the stop-loss within 5 trading days.
+        </dd>
+        <dt>SELL (take profit)</dt>
+        <dd>
+          The bar is in an <b>Interim top</b> setup (price extended and bullish momentum fading - MACD histogram falling
+          above zero, RSI turning down from a high, a lower high or long upper wick, or a close back down right after a new
+          20-bar high) <b>and</b> the take-profit model expects a 1.5 ATR pullback before a 1 ATR rise within 5 trading days.
+          A SELL also closes an open BUY trade that is in profit.
+        </dd>
+        <dt>Current K line</dt>
+        <dd>
+          The decision for the newest candle. When it is a BUY you get the <b>entry</b> (the price when the model decided),
+          <b> profit-take</b>, <b>stop-loss</b> and a <b>chase limit</b> (entry + 0.25 ATR). The K line is live, so the live
+          price is compared with the plan: inside the entry zone, below it (a better price), above the chase limit (wait for
+          a pullback), or already at the profit-take / stop-loss.
+        </dd>
+        <dt>Today's 5-minute check</dt>
+        <dd>
+          Confirms the decision with today's intraday action: price vs VWAP, the last hour's direction, 5-minute RSI
+          direction, rising or falling lows, and position in the day's range. Each scores +1 (supports BUY), −1 (supports
+          SELL) or 0; a total of +2 or more <b>supports</b>, −2 or less is <b>against</b>, anything else is <b>mixed</b>. It
+          refreshes every minute. It is a sanity check, not part of the backtested model.
         </dd>
         <dt>Verdict (green / amber box)</dt>
         <dd>
-          Read this first. <b>Edge found</b> means the model's past signals, made without seeing the future, beat a random
-          day for this symbol. <b>No reliable edge</b> means they did not - treat that model's signals as noise, even if
-          today shows a signal (its badge is then outlined instead of solid).
+          <b>Edge found</b> means the model's past signals, made without seeing the future, beat a random bar for this
+          stock. <b>No reliable edge</b> means they did not - treat its signals with caution.
         </dd>
-        <dt>P(…), threshold, base rate</dt>
+        <dt>Justified / Setup only / Any bar</dt>
         <dd>
-          P is the model's probability that the move happens first. Base rate is how often it happened on any day. A
-          signal fires when P is at least 15 points above the base rate.
+          <b>Justified</b> = past BUY signals that reached the profit-take before the stop-loss within 5 trading days.
+          <b> Setup only</b> = the same for every bar in the setup without the model; <b>Any bar</b> = for every bar. If
+          Justified beats Setup only, the model adds something on top of the rules.
         </dd>
-        <dt>Hit rate vs base rate, AUC</dt>
+        <dt>P, threshold, AUC</dt>
         <dd>
-          Hit rate = how often past signals worked. Compare it with the base rate. AUC measures how well the model ranks
-          days: 0.50 is a coin flip, 0.55–0.60 a modest edge, above 0.65 strong (rare in markets).
+          P is the model's probability. A signal needs P at least 10 points above the base rate. AUC measures how well the
+          model ranks bars: 0.50 is a coin flip, 0.55–0.60 a modest edge.
         </dd>
-        <dt>Signal outcomes</dt>
+        <dt>Trade exit</dt>
         <dd>
-          <b>Target hit</b>: price reached the target before the stop. <b>Stopped out</b>: it fell to the stop first (a day
-          touching both counts as stopped). <b>Expired</b>: neither was reached within the time limit - counted as a miss.
-          For take-profits: <b>Pullback came</b> = price fell as predicted, <b>Kept rising</b> = it rose first instead.
+          What happened if you had bought at the BUY and sold at the first of: the profit-take, the stop-loss, a SELL signal
+          while in profit, or the close after 5 trading sessions. <b>Any-bar entry</b> applies the same exits to every bar.
         </dd>
-        <dt>Short-term: justified?</dt>
+        <dt>Chart range vs model check</dt>
         <dd>
-          Each S entry has a <b>profit-take</b> (default +1.5 × daily ATR) and a <b>stop-loss</b> (default −1 × daily ATR) -
-          set them in the short-term card and press Retrain. The entry is <b>justified</b> if the price reached the
-          profit-take before the stop-loss within the next 5 trading sessions, on any chart interval. The break-even win
-          rate shown next to the inputs is the share of trades that must be justified for the bracket to break even.
-        </dd>
-        <dt>Long-term: validated?</dt>
-        <dd>
-          The model chooses the L entries. Treat each as buying the same dollar amount: if the overall <b>average cost</b>
-          of all those buys is below the current <b>SMA 60</b>, the long-term logic is <b>validated</b>. The comparison with
-          buying on every bar shows whether the L timing really bought cheaper.
-        </dd>
-        <dt>Trade exit (entries)</dt>
-        <dd>
-          What happened if you had bought at the signal and followed the exit rules: whichever came first of the stop, the
-          target, the trailing stop (protects profit once the trade is up), a take-profit signal while in profit, or the
-          time limit. <b>Any-bar entry</b> applies the same exits to every bar: if signal entries do better, the entry
-          timing adds value. Durations count bars of the analysed interval (d = days, w = weeks).
-        </dd>
-        <dt>Take-profit signals (TS / TL)</dt>
-        <dd>
-          Bars when a pullback of 1.5 ATR (within 5 bars) or 3 ATR (within 60 bars) was more likely than usual before a
-          rise - a cue to take profit or tighten a stop on a position you already hold. Separate models with their own
-          verdicts; their markers start hidden unless that model proved reliable.
+          <b>This chart range</b> covers exactly the bars on the chart (1D = today's session, 1Y = the last year): the
+          markers, its BUY / SELL counts and outcomes, and the highlighted rows of the decision tables. A short range has
+          too few decisions to judge a model, so the <b>Model check</b> (verdict, AUC) uses at least the last 1,260 bars of
+          the same interval. The decision tables list the 30 most recent BUYs and SELLs; rows before the chart range are dimmed.
         </dd>
         <dt>Interval &amp; retraining</dt>
         <dd>
-          Everything is computed on the chart's own candles: horizons and ATR are counted in bars of that interval (5 bars
-          = 5 trading days on Daily, 25 minutes on 5-minute bars). Each click of <b>Find entry points</b> retrains the
-          models on the current range and interval. Short-interval moves are noisier, so verdicts there are often weaker.
+          Everything is computed on the chart's own candles; the 5-trading-day window and the daily ATR are the same on every
+          interval. Each click of <b>Find entry points</b> retrains on the current range and interval; changing the range or
+          interval afterwards hides the markers until you retrain.
         </dd>
         <dt>What drives this model</dt>
-        <dd>
-          Which factor groups carried the model's predictive power over the last year - importance, not direction.
-        </dd>
+        <dd>Which factor groups carried the model's predictive power over the last year - importance, not direction.</dd>
       </dl>
     </details>
   );

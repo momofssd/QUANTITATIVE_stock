@@ -25,3 +25,9 @@ async def analysis(
     req = AnalysisRequest(symbol=require_symbol(symbol), range=range, timeframe=timeframe,
                           start=start, end=end, extended=extended, tp_atr=tp_atr, sl_atr=sl_atr)
     return await analysis_service.run_analysis(req, refresh=refresh)
+
+
+@router.get("/analysis/{symbol}/intraday")
+async def intraday(symbol: str):
+    """Today's 5-minute check for the current K line (cheap; the UI refreshes it every minute)."""
+    return await analysis_service.intraday_snapshot(require_symbol(symbol))

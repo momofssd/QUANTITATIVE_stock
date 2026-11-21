@@ -105,14 +105,13 @@ yahoo_api/
 
 quant/   (pure functions; no I/O)
     targets.py     TargetSpec (kind entry|take_profit, direction up|down, horizon, target_atr, stop_atr, cooldown,
-                   model, trailing-stop settings, exit_with). SHORT / LONG entries, TP_SHORT / TP_LONG take-profits;
+                   model, trailing-stop settings, exit_with, horizon_mode, atr_basis). SHORT entry and TP_SHORT
+                   take-profit (long-term entries are being redesigned and are not part of the app right now);
                    Wilder atr(); triple_barrier() -> label (1/0/NaN), resolved_at (bar on which the outcome became
                    known), outcome (target / stop / expired / pending). Direction-aware.
     trades.py      simulate(): trade one entry (stop, target, optional trailing stop, optional take-profit signal,
                    time limit; gap fills at the open; conservative same-bar rule); short-term entries run as plain
                    bracket orders. summarize(): win rate, avg/median return, R, profit factor, holding bars, reasons.
-    cost_check.py  average_cost_check(): long-term validation - equal-dollar buys at every long-term entry, average
-                   cost (harmonic mean) vs the SMA 60, running checkpoints, comparison with buying every bar.
     features.py    stock_features() on the analysed interval's bars + market_features() per day (stock daily closes +
                    Yahoo factors), attached to bars by align(): "same" (daily), "week_end" (weekly), "previous"
                    (intraday - previous day's values only). build_features() combines them; ~40 features, each
@@ -121,6 +120,12 @@ quant/   (pure functions; no I/O)
     model.py       make_model(kind), train_mask() (no-look-ahead rule), walk_forward(), fit_latest(),
                    threshold_for(), reliability() verdict, group_importance() (permutation importance by group).
     relations.py   factor_relations(): correlation (5y, 60d), beta (SPY/QQQ), 5-day lead correlation per factor.
+    setups.py      compute_setups(): rule-based setups per bar - "rebound" (falling momentum easing), "trend" (clear
+                   bullish trend), "top" (bullish momentum easing / interim top) - their component conditions, and
+                   numeric momentum-shift values (MACD-histogram / RSI change, ADX, +DI-DI, wicks, streaks, bars since
+                   20-bar high / low). explain() lists which conditions hold on a bar (current K line in the UI).
+    intraday.py    intraday_check(): five checks on one session's 5-minute bars (VWAP, last hour, 5-min RSI
+                   direction, lows, position in day range) -> BUY / SELL score and verdict.
 
 indicators/
     params.py      IndicatorParams (frozen dataclass; lengths in bars): sma(3), ema(2), bb_len, bb_mult, rsi,
@@ -160,7 +165,8 @@ api/
     routes/search.py   GET /api/search?q=
     routes/quote.py    GET /api/quote/{symbol}
     routes/bars.py     GET /api/bars/{symbol}  (query parameters documented in the signature; see /docs)
-    routes/analysis.py GET /api/analysis/{symbol}?range=&timeframe=&start=&end=&extended=&refresh=
+    routes/analysis.py GET /api/analysis/{symbol}?range=&timeframe=&start=&end=&extended=&tp_atr=&sl_atr=&refresh=
+                       GET /api/analysis/{symbol}/intraday  (today's 5-minute check; the UI polls it every minute)
     routes/live.py     WS /ws/live/{symbol}, GET /api/live/status
 
 backend/tests/
@@ -172,6 +178,8 @@ backend/tests/
                          search ranking
     test_api.py          route-level shapes and error codes
     test_quant.py        triple-barrier labels, no-look-ahead training mask, walk-forward, thresholds, verdicts
+    test_trades.py       bracket / trailing / SELL-signal / time exits, gap fills, open trades
+    test_setups.py       rebound / trend / interim-top setups, explain(), the 5-minute check
     test_analysis_service.py  full analysis pipeline on synthetic data; features unchanged by later bars
 
 
@@ -192,6 +200,7 @@ backend/tests/
     GET /api/analysis/{sym}         entry / take-profit analysis for a range + interval (section 8); 5-30 s;
                                     range, timeframe (not 1Month), start/end (CUSTOM), extended,
                                     tp_atr / sl_atr (short-term profit-take / stop-loss, x daily ATR), refresh
+    GET /api/analysis/{sym}/intraday today's (latest session's) 5-minute check: checks, buy / sell verdicts
     WS  /ws/live/{sym}              live messages (4.3)
     Interactive docs: http://127.0.0.1:8000/docs
 
@@ -275,11 +284,16 @@ chart/  (imperative, no React)
                           onLegend callback.
     legend.ts             buildLegend(): pure legend model (OHLC, change, indicator values).
     buckets.ts            bucketFor(): which bar a live trade belongs to; inRegularSession().
-    theme.ts              colours and OVERLAYS (series definitions with labels from params).
-    markers.ts            analysis -> markers: entries S / L (up-arrows below), take-profits TS / TL (down-arrows
+    theme.ts              colours and OVERLAYS (series definitions with labels from params). Bollinger: bold
+                          cyan bands + dashed middle; VWAP: dashed pink.
+    bandSeries.ts         BandFillSeries - custom series that shades the area between the Bollinger bands (the
+                          library has no built-in fill-between); created before the price series so it sits under
+                          the candles.
+    markers.ts            analysis -> markers: short-term entries S (up-arrows below), take-profits TS (down-arrows
                           above), trade exits (dots labelled with the return); green = signal right, red = wrong,
-                          blue = open. Price lines: today's entry target/stop and open trades' stop/target. ChartEngine.setMarkers / setPriceLines draw them (markers only on bars that
-                          exist in the loaded data, re-applied after data or chart-type changes).
+                          blue = open. latestDecisions() for the newest candle. Price lines: today's profit-take /
+                          stop-loss and an open trade's levels. ChartEngine.setMarkers / setPriceLines draw them
+                          (markers only on bars that exist in the loaded data, re-applied after data / type changes).
 
 hooks/
     useChartSettings.ts   reducer for symbol, range, interval, custom dates, chart type, extended hours,
@@ -295,8 +309,11 @@ hooks/
     useClock.ts           /api/clock every 60 s.
     useBanner.ts          page banner state + showApiError (friendly text per HTTP status).
     usePolling.ts         interval with latest-callback semantics.
-    useAnalysis.ts        runs /api/analysis on demand; cleared on symbol change; per-target marker visibility
-                          (targets judged unreliable start hidden).
+    useAnalysis.ts        runs /api/analysis on demand (always retrains); keeps the query it was trained on
+                          (App.tsx hides the markers + shows "stale" when range / interval / extended / custom
+                          dates differ); cleared on symbol change; marker visibility (SELL starts hidden when
+                          unreliable); profit-take / stop-loss multiples (localStorage); refreshes the 5-minute
+                          check every minute while results are shown.
     useRecentSymbols.ts   last 10 symbols in localStorage.
 
 components/
@@ -320,15 +337,21 @@ components/
                                 renders legend, panes, loading/empty overlay
     chart/ChartLegend.tsx       renders the legend model
     history/HistoryTable.tsx    paged OHLCV table (newest first) + CSV button
-    analysis/AnalysisPanel.tsx  "Entry & Take-Profit Analysis" card: progress, marker legend (+ exits toggle),
-                                reading guide, entry cards, take-profit cards, relations, method
-    analysis/TargetCard.tsx     one target (entry or take-profit): verdict, today's signal, open trade, 5-year
-                                record, trade backtest vs any-day entry (entries), marker toggle, latest signals
-                                with outcome + trade exit, factor-group importance
+    analysis/AnalysisPanel.tsx  "Short-term BUY & SELL Analysis" card: progress, stale notice, marker legend,
+                                Current K panel, reading guide, BUY + SELL cards, the two decision tables,
+                                relations, method
+    analysis/CurrentKPanel.tsx  current K line: BUY / SELL decision combined with the 5-minute check, BUY entry plan
+                                (entry, profit-take, stop-loss, chase limit) vs the live price, setup checklists
+    analysis/TargetCard.tsx     BUY or SELL: profit-take / stop-loss editor + exit rule (BUY), open trade,
+                                "This chart range" (decisions, justified vs setup-only vs any bar, BUY trades vs
+                                any-bar entry, buy & hold), "Model check" over >= 1,260 bars (verdict, AUC, by
+                                setup, trade backtest), marker toggle, factor-group importance
+    analysis/DecisionTable.tsx  30 most recent BUY (or SELL) decisions, newest first: setup, P, entry / levels,
+                                outcome, trade exit; rows inside the chart range highlighted, older ones dimmed
+    analysis/util.ts            formatting helpers shared by the cards and tables (pct, span, rule text...)
     analysis/ReadingGuide.tsx   plain-language explanation of every number in the panel
     analysis/FactorRelations.tsx correlation / beta / lead table for SPY, QQQ, VIX, oil, gasoline, rate
-    analysis/DecisionStrip.tsx   one-line decision per target for the latest analysed K line
-    ("Find entry points" button lives in chart/ChartCard.tsx; it switches the chart to 5Y Daily and runs the analysis)
+    ("Find entry points" button lives in chart/ChartCard.tsx; it retrains on the chart as shown)
 
 styles/global.css         the whole look (brokerage-research style: white surfaces, #368727 green, grey rules).
                           Class names are used directly by components; no CSS-in-JS.
@@ -373,67 +396,72 @@ Add a market / macro factor
     yahoo_api/client.py FACTORS -> quant/features.py (features + group) -> it appears in relations automatically.
 
 
-8. ENTRY & TAKE-PROFIT ANALYSIS (Find entry points)
----------------------------------------------------
+8. SHORT-TERM BUY & SELL ANALYSIS (Find entry points)
+-----------------------------------------------------
 Runs on the chart AS SHOWN: same symbol, range, interval and extended-hours setting. Every click retrains.
 Works on 1-minute to weekly bars; monthly is refused (Alpaca history since 2016 = ~130 monthly bars).
+Long-term entries were removed for now (to be redesigned); quant/model.py keeps the "logistic" model kind and
+quant/trades.py the trailing-stop exit for that work.
 
-Definitions (price = the bar's close; a bar touching both levels counts as a stop; neither in time = expired):
-    Short-term entry (S)        JUSTIFIED if the profit-take (+1.5 x DAILY ATR, adjustable 0.5-5) is reached before the
-                                stop-loss (-1 x DAILY ATR, adjustable 0.25-5) within 5 TRADING SESSIONS - on every
-                                interval (intraday: through the same time of day 5 sessions later; weekly: next bar).
-                                Daily ATR is the one known at the bar (previous day's on intraday bars).
-    Short-term take-profit (TS) -1.5 daily ATR (pullback) before +1 daily ATR within 5 trading sessions.
-    Long-term entry (L)         +3 ATR before -2 ATR within 60 bars of the interval (interval ATR).
-    Long-term take-profit (TL)  -3 ATR (pullback) before +2 ATR within 60 bars.
-    Outcome names in the UI: S Justified / Not justified (SL hit / expired); L Target hit / Stopped out / Expired;
-    take-profits Pullback came / Kept rising.
-    TP / SL multiples come from the short-term card (query tp_atr / sl_atr); changing them retrains the models.
+BUY = setup AND model:
+    Setup (quant/setups.py, on the analysed bars):
+      rebound  falling momentum easing: below SMA20 and down over 5 bars (or RSI < 40 recently), plus >= 2 of:
+               MACD histogram < 0 but rising | RSI turning up from a low | higher low or long-lower-wick candle
+      trend    clear bullish trend: close > SMA20 > SMA50, both rising, ADX(14) >= 20, above SMA200 when available
+    Model: P(profit-take before stop-loss within 5 trading sessions) >= training base rate + 10 pts.
+    Label (quant/targets.py SHORT): price reaches entry + tp x DAILY ATR (default 1.5, adjustable 0.5-5) before
+    entry - sl x DAILY ATR (default 1, adjustable 0.25-5) within 5 trading sessions - on every interval (intraday:
+    through the same time of day 5 sessions later; weekly: the next bar). A bar touching both counts as a stop.
+SELL (take profit) = interim-top setup AND model:
+    top  extended (above SMA20 and up over 10 bars, or RSI > 65 recently) plus >= 2 of: MACD histogram > 0 but
+         falling | RSI turning down from a high | lower high or long-upper-wick candle | close back below the
+         prior close right after a new 20-bar high
+    Model: P(1.5 daily-ATR pullback before a 1 ATR rise within 5 sessions) >= base rate + 10 pts.
+Momentum-shift values and the setup flags are also model features (group "Momentum shift & setups").
 
-Long-term validation (quant/cost_check.py): the model picks the L entries; each is treated as buying the same dollar
-amount. The logic is VALIDATED if the overall average cost of all those buys is below the current SMA 60 of the
-interval. Shown with running checkpoints, "bought X% cheaper/dearer than buying every bar", and on the chart as the
-average-cost step line + dashed SMA 60 (lines never rescale the price axis).
+Current K line (components/analysis/CurrentKPanel.tsx):
+    - Decision on the newest candle (model from all outcomes known now + the setup on that candle), shown even inside
+      a marker cooldown; drawn on the chart as "BUY" / "SELL" (black) or "BUY –" / "SELL –" (grey).
+    - BUY plan: entry = the candle's price when the model decided; profit-take, stop-loss, chase limit
+      (entry + 0.25 daily ATR). The live price (quote stream) is classified: inside the entry zone, below the entry
+      (better price, reward:risk shown), above the chase limit (wait), at/above profit-take, at/below stop-loss.
+      Drawn as dashed "BUY entry" / "Profit-take" / "Stop-loss" price lines.
+    - Today's 5-minute check (quant/intraday.py, refreshed every minute via /api/analysis/{sym}/intraday):
+      VWAP, last hour, 5-min RSI direction, lows, day-range position -> score; BUY + "supports" = confirmed,
+      "mixed" = unconfirmed, "against" = WAIT; same for SELL with the sign flipped. Not part of the backtest
+      (historical markers use setup + model only).
+    - The model decision is not re-run automatically as the live K line develops; press Find entry points again.
 
-Trade exits (quant/trades.py):
-    S: bracket order - profit-take, stop-loss, or the close at the end of 5 sessions.
-    L: first of stop -2 ATR | target +3 ATR | trailing stop 2 ATR below the highest close once the close is +1 ATR up |
-       TL take-profit signal while in profit | 60 bars.
-    Gaps through stop/target fill at the open. ATR fixed at entry. Returns before costs. Compared with "any-bar
-    entry" (the same exits on every bar); the panel states whether trading the signals beat it.
+Trade exits for every BUY (quant/trades.py): profit-take | stop-loss | a SELL signal while in profit | the close
+after 5 sessions. Gaps fill at the open. Compared with "any-bar entry" (same exits on every bar).
 
-Data: the interval's Alpaca bars (same as the chart), the stock's Alpaca daily closes (for market-relation features
-and the relations table), Yahoo Finance daily closes for SPY, QQQ, ^VIX, CL=F (WTI crude), RB=F (RBOB gasoline),
-^IRX (13-week T-bill yield - Yahoo has no Fed funds series; ^IRX tracks it).
-Factor alignment (no look-ahead): daily bars use that day's values, weekly bars the values at the end of the week,
-intraday bars the PREVIOUS day's values.
+Data: the interval's Alpaca bars (same as the chart), the stock's Alpaca daily bars (daily ATR, market-relation
+features, relations table), today's Alpaca 5-minute bars, Yahoo Finance daily closes for SPY, QQQ, ^VIX, CL=F,
+RB=F, ^IRX (13-week T-bill yield, the Fed-rate proxy). Factor alignment (no look-ahead): daily bars use that day's
+values, weekly bars the end of the week, intraday bars the previous day's.
 
 Model and validation:
-    - ~40 features per bar, all computable at that bar's close (tested, including the alignment modes).
-    - Evaluation window = the chart's range, widened to at least 1,260 bars (5 years on Daily) so the verdict has
-      enough history. Data fetched: daily/weekly since 2016; intraday enough bars for warm-up + training + window.
-    - Walk-forward: every max(21, window/60) bars a model is trained on the preceding 1,260 bars whose outcome was
-      ALREADY KNOWN (train_mask: resolved strictly before the prediction bar) and predicts the next block. Every
-      chart marker is an out-of-sample prediction.
-    - 5-bar targets use gradient-boosted trees, 60-bar targets a regularised logistic regression (chosen from an
-      out-of-sample comparison on SPY, QQQ, AAPL, MSFT, NVDA, JPM daily: short 0.55 trees; long 0.49 trees vs
-      0.52 logistic).
-    - Signal: P(success) >= training base rate + 15 pts (bounded 0.30-0.85), max one per cooldown (5 / 20 bars).
-    - Verdict per target: "reliable" only if out-of-sample AUC >= 0.53 AND signals hit more often than the base rate
-      (AUC < 0.47 is reported as worse than chance).
-    - Markers by default: S and L always on; TS / TL on only when that model is reliable; trade-exit dots on.
-    - Latest K line: every target's current decision is drawn on the newest analysed candle regardless of the
-      cooldown - "S BUY" / "L BUY" (black up-arrow), "TS SELL" / "TL SELL" (black down-arrow), "S –" (grey dot) for
-      no entry / hold, "?" when the model has no reliable edge - and summarised in the panel's decision strip
-      (chart/markers.ts latestDecisions(), components/analysis/DecisionStrip.tsx).
-      Markers are drawn only while the chart shows the analysed interval (otherwise the panel flags the result
-      as stale with a one-click retrain).
-    - "Today": a model trained on all outcomes known now scores the latest bar; entry/target/stop shown and,
-      when it signals, drawn as dashed price lines; an entry still inside its horizon shows as an open trade.
-    - Factor groups: permutation importance (ROC-AUC drop) on the last 252 bars of the window, summed per group.
-    - Relations: daily correlations (5y and 60d), beta to SPY/QQQ, and 5-day lead correlation (always daily).
-Observed (SPY, Nov 2026): short-term edge on Daily (AUC ~0.59) and 4-hour (~0.59); near or below chance on 1- and
-5-minute bars, where moves are mostly noise. Cost: 5-30 s per click. Research output, not advice.
+    - ~55 features per bar, all computable at that bar's close (tested).
+    - Two windows (analysis_service.eval_window -> r0, w0, w1):
+        chart range  [r0, w1) = exactly the bars on the chart (1D = the latest session, 1Y = the last year).
+                     Signals carry in_range; payload range_window + per target range_stats and trades.range_*.
+                     The chart markers, the "This chart range" block and the highlighted table rows use it.
+        model check  [w0, w1) = the chart range widened to at least 1,260 bars of the same interval (5 years on
+                     Daily, ~3 weeks on 5-minute). Verdict, AUC, by-setup and the window backtest use it, so a
+                     1D chart is not judged on a handful of decisions.
+    - Walk-forward: every max(21, window/60) bars a gradient-boosted-trees model is trained on the preceding 1,260
+      bars whose outcome was ALREADY KNOWN and predicts the next block -> every marker is out-of-sample.
+    - One signal per cooldown (5 bars on Daily, one hour intraday).
+    - Verdict: "reliable" only if AUC >= 0.53 AND signals hit more often than the base rate (AUC < 0.47 = worse than
+      chance). Stats also show "Setup only" (every setup bar, no model) to see what the model adds over the rules.
+    - Markers (chart range only) by default: BUY always on; SELL on only when that model is reliable; trade-exit
+      dots on. The current K line's decision is always drawn.
+    - UI lists the 30 most recent BUY and SELL decisions (components/analysis/DecisionTable.tsx), including those
+      before the chart range (dimmed, tagged "before chart range").
+Observed (Daily, 5-year windows, Nov 2026; SPY QQQ AAPL MSFT NVDA JPM): the setups alone hit at about the base rate
+(~30%); setup + model adds a few points at best, not consistently (SPY 32-33% vs 31% setup-only vs 30% any bar;
+MSFT worse). Trend BUYs beat rebound BUYs on most symbols (SPY 38% vs 24%). SELL is near chance for most.
+Research output, not advice.
 
 Next phase - suggested placement for more models / strategies
     backend/app/quant/         new pure modules (features, labels, models)

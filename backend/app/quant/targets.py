@@ -48,20 +48,18 @@ class TargetSpec:
         return asdict(self)
 
 
-# Model choice per horizon comes from an out-of-sample comparison on SPY, QQQ, AAPL, MSFT, NVDA, JPM:
-# 5-day: trees found a modest edge (mean AUC 0.55); 60-day: trees overfit regimes (AUC 0.49) and the regularised
-# logistic model was the most stable (AUC 0.52). Long-horizon outcomes are hard to predict.
-# Short-term: justified when price reaches the profit-take (+1.5 daily ATR, adjustable) before the stop-loss
-# (-1 daily ATR, adjustable) within 5 trading sessions, on any candle interval. Traded as a plain bracket order.
-SHORT = TargetSpec("short", "Short-term entry", "entry", "up", horizon=5, target_atr=1.5, stop_atr=1.0,
-                   cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily")
-LONG = TargetSpec("long", "Long-term entry", "entry", "up", horizon=60, target_atr=3.0, stop_atr=2.0,
-                  cooldown=20, model="logistic", trail_after_atr=1.0, trail_atr=2.0, exit_with="tp_long")
-TP_SHORT = TargetSpec("tp_short", "Short-term take-profit", "take_profit", "down", horizon=5, target_atr=1.5,
+# Model choice from an out-of-sample comparison on SPY, QQQ, AAPL, MSFT, NVDA, JPM: for 5-day outcomes
+# gradient-boosted trees found a modest edge (mean AUC 0.55). (Long-term entries are being redesigned separately.)
+# BUY (short-term entry): justified when price reaches the profit-take (+1.5 daily ATR, adjustable) before the
+# stop-loss (-1 daily ATR, adjustable) within 5 trading sessions, on any candle interval. Only marked in a
+# "rebound" or "trend" setup (quant/setups.py). Traded as a bracket order that also exits on a SELL while in profit.
+SHORT = TargetSpec("short", "BUY - short-term entry", "entry", "up", horizon=5, target_atr=1.5, stop_atr=1.0,
+                   cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily", exit_with="tp_short")
+# SELL (take profit): a pullback of 1.5 daily ATR comes before a 1 ATR rise within 5 sessions; only marked in an
+# "interim top" setup (bullish momentum easing).
+TP_SHORT = TargetSpec("tp_short", "SELL - take profit", "take_profit", "down", horizon=5, target_atr=1.5,
                       stop_atr=1.0, cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily")
-TP_LONG = TargetSpec("tp_long", "Long-term take-profit", "take_profit", "down", horizon=60, target_atr=3.0,
-                     stop_atr=2.0, cooldown=20, model="logistic")
-TARGETS = (SHORT, LONG, TP_SHORT, TP_LONG)
+TARGETS = (SHORT, TP_SHORT)
 
 # outcome codes
 PENDING, TARGET, STOP, EXPIRED = "pending", "target", "stop", "expired"

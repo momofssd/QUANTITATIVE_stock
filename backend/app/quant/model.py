@@ -13,7 +13,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 MIN_TRAIN = 250          # labelled rows needed before a fold is trained
-SIGNAL_EDGE = 0.15       # mark an entry when P(success) >= base rate + this ...
+SIGNAL_EDGE = 0.10       # mark a signal when P(success) >= base rate + this (the setup rules already filter) ...
 THRESHOLD_BOUNDS = (0.30, 0.85)  # ... clipped to these bounds
 RELIABLE_AUC = 0.53      # out-of-sample AUC needed (with hit rate above base rate) to call a target reliable
 
