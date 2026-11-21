@@ -7,18 +7,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MarkerVisibility } from "../chart/markers";
 import { load, save } from "../lib/storage";
 import { api, isAbort, type AnalysisQuery, type ApiError } from "../services/api";
-import type { AnalysisResult, IntradayCheck } from "../types/api";
+import type { AnalysisResult, BracketMode, IntradayCheck } from "../types/api";
 
 export interface AnalysisInputs extends AnalysisQuery {
   symbol: string;
 }
 
 export interface Bracket {
-  tp: number; // profit-take, x daily ATR
-  sl: number; // stop-loss, x daily ATR
+  mode: BracketMode; // "fixed": tp / sl below; "dynamic": set per decision from the chart
+  tp: number;        // profit-take, x daily ATR (fixed mode)
+  sl: number;        // stop-loss, x daily ATR (fixed mode)
 }
 
-export const DEFAULT_BRACKET: Bracket = { tp: 1.5, sl: 1.0 };
+export const DEFAULT_BRACKET: Bracket = { mode: "fixed", tp: 1.5, sl: 1.0 };
 const INTRADAY_REFRESH_MS = 60_000;
 
 export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
@@ -26,7 +27,7 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
   const [query, setQuery] = useState<AnalysisInputs | null>(null); // what `result` was trained on
   const [loading, setLoading] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [bracket, setBracketState] = useState<Bracket>(() => load("bracket", DEFAULT_BRACKET));
+  const [bracket, setBracketState] = useState<Bracket>(() => ({ ...DEFAULT_BRACKET, ...load("bracket", DEFAULT_BRACKET) }));
   const [visible, setVisible] = useState<MarkerVisibility>({
     short: true, tp_short: true, exits: true,
   });
@@ -53,11 +54,11 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     setLoading(true);
     setStartedAt(Date.now());
     try {
-      const r = await api.analysis(sym, { ...query, tp_atr: b.tp, sl_atr: b.sl, refresh: true }, c.signal);
+      const r = await api.analysis(sym, { ...query, tp_atr: b.tp, sl_atr: b.sl, bracket: b.mode, refresh: true }, c.signal);
       setResult(r);
       setQuery(inputs);
-      // BUY markers are always drawn; SELL markers only where the take-profit model proved reliable.
-      setVisible({ short: true, exits: true, tp_short: r.targets.tp_short.stats.reliable });
+      // BUY and SELL markers are both drawn by default (the SELL card warns when that model has no reliable edge).
+      setVisible({ short: true, exits: true, tp_short: true });
     } catch (e) {
       if (!isAbort(e)) onError(e as ApiError);
     } finally {

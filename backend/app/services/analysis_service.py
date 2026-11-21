@@ -31,8 +31,12 @@ from sklearn.metrics import roc_auc_score
 from ..alpaca_api import feeds
 from ..core.errors import ApiError
 from ..core.timeutil import EARLIEST, ET, et_epoch, iso, now_et
+from ..quant import brackets as qb
+from ..quant import explain as qe
 from ..quant import features as qf
 from ..quant import model as qm
+from ..quant import portfolio
+from ..quant import projection as qp
 from ..quant.intraday import intraday_check
 from ..quant.relations import factor_relations
 from ..quant.setups import BUY_SETUPS, buy_setup_names, compute_setups, explain
@@ -55,8 +59,10 @@ CACHE_TTL = 600          # seconds
 CHASE_ATR = 0.25         # BUY entry stays valid up to entry + this x daily ATR (don't chase further)
 TP_RANGE = (0.5, 5.0)    # allowed short-term profit-take, in daily ATR
 SL_RANGE = (0.25, 5.0)   # allowed short-term stop-loss, in daily ATR
+BRACKETS = ("fixed", "dynamic")  # BUY profit-take / stop-loss: user's ATR multiples, or per decision (quant/brackets)
 
 ALIGN_MODE = {"1Day": "same", "1Week": "week_end"}  # intraday -> "previous"
+BAR_WORD = {"1Day": "day", "1Week": "week"}  # intraday -> "bar"
 BAR_UNIT = {
     "1Min": "1-minute bars", "5Min": "5-minute bars", "15Min": "15-minute bars", "30Min": "30-minute bars",
     "1Hour": "hourly bars", "4Hour": "4-hour bars", "1Day": "trading days", "1Week": "weeks",
@@ -75,6 +81,7 @@ class AnalysisRequest:
     extended: bool = False
     tp_atr: float = SHORT.target_atr   # short-term profit-take, x daily ATR
     sl_atr: float = SHORT.stop_atr     # short-term stop-loss, x daily ATR
+    bracket: str = "fixed"             # "fixed" (tp_atr / sl_atr) or "dynamic" (set per decision)
 
 
 async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
@@ -85,8 +92,10 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
     if not (TP_RANGE[0] <= req.tp_atr <= TP_RANGE[1]) or not (SL_RANGE[0] <= req.sl_atr <= SL_RANGE[1]):
         raise ApiError(400, f"Profit-take must be {TP_RANGE[0]}-{TP_RANGE[1]} ATR and stop-loss "
                             f"{SL_RANGE[0]}-{SL_RANGE[1]} ATR.")
+    if req.bracket not in BRACKETS:
+        raise ApiError(400, "bracket must be 'fixed' or 'dynamic'.")
     intraday = tf_min < 1440
-    key = (req.symbol, rng, tf, req.start, req.end, req.extended and intraday, req.tp_atr, req.sl_atr)
+    key = (req.symbol, rng, tf, req.start, req.end, req.extended and intraday, req.tp_atr, req.sl_atr, req.bracket)
     hit = _cache.get(key)
     if hit and not refresh and time.time() - hit[0] < CACHE_TTL:
         return hit[1]
@@ -112,7 +121,7 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
     result = await asyncio.to_thread(
         compute, req.symbol, df, session, daily, factors,
         rng=rng, tf=tf, intraday=intraday, display_start=display_start, display_end=display_end,
-        tp_atr=req.tp_atr, sl_atr=req.sl_atr)
+        tp_atr=req.tp_atr, sl_atr=req.sl_atr, bracket=req.bracket)
     result["extended"] = bool(req.extended and intraday)
     result["intraday_check"] = await intraday_snapshot(req.symbol)
     _cache[key] = (time.time(), result)
@@ -142,7 +151,7 @@ def _num(v, nd: int = 4):
 
 
 def _signals(spec: TargetSpec, cooldown: int, stamps, times, close, atr_v, wf, resolved, outcome,
-             w0: int, w1: int, setup: np.ndarray) -> list[dict]:
+             w0: int, w1: int, setup: np.ndarray, lv: qb.Levels) -> list[dict]:
     """Bars in [w0, w1) inside a setup (setup[i] != "") where P(success) >= threshold, one per cooldown period."""
     out, last = [], -10**9
     for i in range(w0, w1):
@@ -151,16 +160,24 @@ def _signals(spec: TargetSpec, cooldown: int, stamps, times, close, atr_v, wf, r
             continue
         last = i
         r = int(resolved[i])
-        target, stop = spec.levels(close[i], atr_v[i])
         out.append({
             "i": i, "time": int(times[i]), "date": stamps[i], "setup": str(setup[i]), "in_range": False,
             "prob": _num(p, 3), "threshold": _num(thr, 3),
             "entry": _num(close[i], 2), "atr": _num(atr_v[i], 2),
-            "target": _num(target, 2), "stop": _num(stop, 2),
+            **_level_view(lv, i, close, atr_v),
             "outcome": outcome[i], "resolved_date": stamps[r] if r < len(stamps) else None,
             "days": (r - i) if r < len(stamps) else None,
         })
     return out
+
+
+def _level_view(lv: qb.Levels, i: int, close, atr_v) -> dict:
+    """Target / stop prices at bar i, their distance in ATR and what set them."""
+    target, stop = lv.at(i)
+    a = atr_v[i]
+    return {"target": _num(target, 2), "stop": _num(stop, 2),
+            "tp_atr": _num(abs(target - close[i]) / a, 2), "sl_atr": _num(abs(close[i] - stop) / a, 2),
+            "target_basis": str(lv.target_basis[i]), "stop_basis": str(lv.stop_basis[i])}
 
 
 def _trade_view(t: dict, stamps, times, left: int | None, left_unit: str) -> dict:
@@ -198,6 +215,30 @@ def _stats(wf, label, signals, w0: int, w1: int, setup: np.ndarray) -> dict:
         "by_setup": {name: _by_setup([s for s in done if s["setup"] == name])
                      for name in sorted({s["setup"] for s in signals})},
     }
+
+
+def _train_span(label, resolved, cutoff: int, stamps, session_ord: np.ndarray, days: np.ndarray) -> dict | None:
+    """The rows a model trained for `cutoff` learned from (rolling window, outcomes known before cutoff)."""
+    idx = np.flatnonzero(qm.train_mask(label, resolved, cutoff, TRAIN_BARS))
+    if len(idx) == 0:
+        return None
+    return {"start": stamps[idx[0]], "end": stamps[idx[-1]], "rows": int(len(idx)),
+            "sessions": int(len(np.unique(session_ord[idx]))),
+            "days": int((days[idx[-1]] - days[idx[0]]) / np.timedelta64(1, "D"))}
+
+
+def _training(fitted: dict, stamps, session_ord: np.ndarray, days: np.ndarray, n: int, w0: int, step: int) -> dict:
+    """Actual training dates per target: the first walk-forward model and today's model."""
+    out = {}
+    for key, (_, _, label, resolved, _, wf, _) in fitted.items():
+        first = wf.models[0][0] if wf.models else None
+        span = _train_span(label, resolved, first, stamps, session_ord, days) if first is not None else None
+        out[key] = {
+            "folds": wf.folds, "retrain_every": step,
+            "first": {**span, "predicts_from": stamps[first]} if span else None,
+            "current": _train_span(label, resolved, n, stamps, session_ord, days),
+        }
+    return out
 
 
 def _range_stats(label, signals, r0: int, w1: int, setup: np.ndarray) -> dict:
@@ -270,7 +311,7 @@ def _horizons(spec: TargetSpec, tf: str, session: pd.Series, et_naive: pd.Dateti
 
 def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFrame, factors: pd.DataFrame, *,
             rng: str, tf: str, intraday: bool, display_start, display_end,
-            tp_atr: float = SHORT.target_atr, sl_atr: float = SHORT.stop_atr) -> dict:
+            tp_atr: float = SHORT.target_atr, sl_atr: float = SHORT.stop_atr, bracket: str = "fixed") -> dict:
     n = len(df)
     mode = ALIGN_MODE.get(tf, "previous")
     bar_dates = pd.DatetimeIndex(session.to_numpy())
@@ -291,27 +332,39 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
 
     r0, w0, w1 = eval_window(df.index, session, rng, display_start, display_end)
     step = max(MIN_RETRAIN_EVERY, math.ceil((w1 - w0) / MAX_FOLDS))
-    specs = [dataclasses.replace(s, target_atr=tp_atr, stop_atr=sl_atr) if s.key == "short" else s for s in TARGETS]
+    specs = [dataclasses.replace(s, target_atr=tp_atr, stop_atr=sl_atr, bracket=bracket) if s.key == "short" else s
+             for s in TARGETS]
 
     # 1) labels + walk-forward probabilities for every target (entries and take-profits)
     fitted = {}
     for spec in specs:
         a = day_atr if spec.atr_basis == "daily" else bar_atr
         hz = _horizons(spec, tf, session, et_naive)
-        label, resolved, outcome = triple_barrier(high, low, close, a, spec, hz.end, hz.complete)
-        wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model)
-        fitted[spec.key] = (a, hz, label, resolved, outcome, wf)
+        if spec.bracket == "dynamic":
+            lv = qb.dynamic_levels(close, high, low, a, hz.session_ord if intraday else np.arange(n),
+                                   setup_of[spec.key], bars_per_session=0.2 if tf == "1Week" else 1.0)
+        else:
+            lv = qb.fixed_levels(close, a, spec.target_atr, spec.stop_atr, spec.sign)
+        label, resolved, outcome = triple_barrier(high, low, close, a, spec, hz.end, hz.complete,
+                                                  levels=(lv.target, lv.stop))
+        wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model, keep=True)
+        fitted[spec.key] = (a, hz, label, resolved, outcome, wf, lv)
     # Out-of-sample SELL signal per bar (model AND interim-top setup); closes BUY trades that are in profit.
     tp_signal = {k: (np.nan_to_num(f[5].prob, nan=-1.0) >= np.nan_to_num(f[5].threshold, nan=2.0))
                  & (setup_of[k] != "") for k, f in fitted.items()}
 
     targets = {}
+    now_models: dict[str, qp.Side] = {}
     for spec in specs:
-        a, hz, label, resolved, outcome, wf = fitted[spec.key]
+        a, hz, label, resolved, outcome, wf, lv = fitted[spec.key]
         signals = _signals(spec, hz.cooldown, stamps, times, close, a, wf, resolved, outcome, w0, w1,
-                           setup_of[spec.key])
+                           setup_of[spec.key], lv)
         for sgl in signals:
             sgl["in_range"] = sgl["i"] >= r0
+            # what supported the decision (expanded row in the UI)
+            sgl["why"] = qe.explain_decision(wf, sgl["i"], X, names, qf.GROUPS, setups,
+                                             ("rebound", "trend") if spec.kind == "entry" else ("top",),
+                                             BAR_WORD.get(tf, "bar"))
 
         def left(i: int) -> int | None:
             if hz.unit == "sessions":
@@ -324,13 +377,19 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             sims = []
             for sgl in signals:
                 i = sgl["i"]
-                t = simulate(i, open_, high, low, close, a[i], spec, tps, int(hz.end[i]), bool(hz.complete[i]))
+                t = simulate(i, open_, high, low, close, a[i], spec, tps, int(hz.end[i]), bool(hz.complete[i]),
+                             lv.at(i))
                 sgl["trade"] = _trade_view(t, stamps, times, left(i), hz.unit)
                 sims.append(t)
+                # For the $100 simulation: the first profit-take / stop-loss hit, with no time limit.
+                h = simulate(i, open_, high, low, close, a[i], spec, None, n - 1, False, lv.at(i))
+                sgl["_exit"] = ({"i": h["exit_index"], "time": int(times[h["exit_index"]]),
+                                 "date": stamps[h["exit_index"]], "price": h["price"], "reason": h["reason"]}
+                                if h["status"] == "closed" else None)
             # Baseline: the same exit rules applied to an entry on EVERY bar of the window.
             every_idx = [i for i in range(w0, min(w1, n - 1)) if np.isfinite(a[i]) and a[i] > 0]
-            every = [simulate(i, open_, high, low, close, a[i], spec, tps, int(hz.end[i]), bool(hz.complete[i]))
-                     for i in every_idx]
+            every = [simulate(i, open_, high, low, close, a[i], spec, tps, int(hz.end[i]), bool(hz.complete[i]),
+                              lv.at(i)) for i in every_idx]
             trades = {
                 "signals": summarize(sims),
                 "every_day": summarize(every),
@@ -342,17 +401,16 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                 "rules": {"stop_atr": spec.stop_atr, "target_atr": spec.target_atr,
                           "trail_after_atr": spec.trail_after_atr, "trail_atr": spec.trail_atr,
                           "horizon": spec.horizon, "horizon_mode": spec.horizon_mode, "atr_basis": spec.atr_basis,
-                          "exit_with": spec.exit_with},
+                          "exit_with": spec.exit_with, "bracket": spec.bracket},
             }
-        for sgl in signals:
-            sgl.pop("i")
 
         latest, base_now = qm.fit_latest(X, label, resolved, TRAIN_BARS, kind=spec.model)
         current = None
+        now_models[spec.key] = qp.Side(None, float("nan"))
         if latest is not None and np.isfinite(a[-1]):
             p_now = float(latest.predict_proba(X[-1:])[0, 1])
             thr_now = qm.threshold_for(base_now)
-            target, stop = spec.levels(close[-1], a[-1])
+            now_models[spec.key] = qp.Side(latest, thr_now)
             setup_now = str(setup_of[spec.key][-1])
             ml = bool(p_now >= thr_now)
             current = {
@@ -362,7 +420,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                 "setup": setup_now,                    # "rebound" / "trend" / "top" / ""
                 "signal": bool(ml and setup_now),      # BUY / SELL = model AND setup
                 "entry": _num(close[-1], 2), "atr": _num(a[-1], 2),
-                "target": _num(target, 2), "stop": _num(stop, 2),
+                **_level_view(lv, n - 1, close, a),
                 "chase_limit": _num(close[-1] + CHASE_ATR * a[-1], 2) if spec.kind == "entry" else None,
                 "horizon_days": spec.horizon,
             }
@@ -379,15 +437,70 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                                               names, qf.GROUPS, kind=spec.model),
         }
 
+    # $100 per BUY (every BUY adds a lot), the next SELL sells everything (or each lot at its own profit-take /
+    # stop-loss), over the 30 most recent BUYs - quant/portfolio.py.
+    def event(s: dict) -> dict:
+        return {"i": s["i"], "time": s["time"], "date": s["date"], "price": s["entry"], "setup": s["setup"],
+                "exit": s.get("_exit")}
+    simulation = portfolio.simulate_decisions(
+        [event(s) for s in targets["short"]["signals"]], [event(s) for s in targets["tp_short"]["signals"]],
+        {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])})
+    for t in targets.values():
+        for sgl in t["signals"]:
+            sgl.pop("i")
+            sgl.pop("_exit", None)
+
+    # Projected BUY entry / SELL price: at which close would the current K line become a BUY or a SELL?
+    a_buy, hz_buy = fitted["short"][0], fitted["short"][1]
+    tp_spec = next(sp for sp in specs if sp.key == "tp_short")
+    a_sell = fitted["tp_short"][0]
+
+    def buy_levels(b: pd.DataFrame, setup: str) -> dict:
+        m = len(b)
+        c_, h_, l_ = (b[k].to_numpy(dtype=float) for k in ("close", "high", "low"))
+        a_t = a_buy[-m:]
+        if bracket == "dynamic":
+            ordn = (hz_buy.session_ord if intraday else np.arange(n))[-m:]
+            names_t = np.array([""] * (m - 1) + [setup], dtype=object)
+            lvx = qb.dynamic_levels(c_, h_, l_, a_t, ordn, names_t, bars_per_session=0.2 if tf == "1Week" else 1.0)
+        else:
+            lvx = qb.fixed_levels(c_, a_t, tp_atr, sl_atr)
+        return _level_view(lvx, m - 1, c_, a_t)
+
+    def sell_levels(price: float) -> dict:
+        return {"target": _num(price - tp_spec.target_atr * a_sell[-1], 2),
+                "stop": _num(price + tp_spec.stop_atr * a_sell[-1], 2)}
+
+    def signal_now(key: str) -> bool:
+        return bool((targets[key]["current"] or {}).get("signal"))
+
+    proj = qp.project(
+        df, daily["close"], factors, bar_dates, mode, float(a_buy[-1]), now_models["short"], now_models["tp_short"],
+        {"buy": signal_now("short"), "sell": signal_now("tp_short")}, buy_levels, sell_levels)
+
     rel_start = daily.index[-1] - pd.DateOffset(years=RELATION_YEARS)
+    session_ord = pd.factorize(session.to_numpy())[0]
+    training = {
+        "trained_at": now_et().strftime("%Y-%m-%d %H:%M ET"),
+        "train_bars": TRAIN_BARS, "min_train": qm.MIN_TRAIN,
+        "data": {"start": stamps[0], "end": stamps[-1], "bars": n},
+        "daily": {"start": daily.index[0].strftime("%Y-%m-%d"), "end": daily.index[-1].strftime("%Y-%m-%d"),
+                  "bars": len(daily)},
+        "factors": {"start": factors.index[0].strftime("%Y-%m-%d"), "end": factors.index[-1].strftime("%Y-%m-%d")},
+        "targets": _training(fitted, stamps, session_ord, bar_dates.to_numpy(), n, w0, step),
+    }
     return {
+        "training": training,
         "symbol": symbol,
         "range": rng,
         "timeframe": tf,
         "intraday": intraday,
         "bar_unit": BAR_UNIT[tf],
         "asof": stamps[-1],
-        "params": {"tp_atr": tp_atr, "sl_atr": sl_atr, "tp_range": TP_RANGE, "sl_range": SL_RANGE},
+        "params": {"tp_atr": tp_atr, "sl_atr": sl_atr, "tp_range": TP_RANGE, "sl_range": SL_RANGE,
+                   "bracket": bracket, "dynamic_rules": qb.RULES},
+        "simulation": simulation,
+        "projection": proj,
         "range_window": {"start": stamps[r0], "end": stamps[w1 - 1], "bars": w1 - r0, "start_time": int(times[r0])},
         "window": {"start": stamps[w0], "end": stamps[w1 - 1], "bars": w1 - w0,
                    "train_bars": TRAIN_BARS, "retrain_every": step, "years": RELATION_YEARS},

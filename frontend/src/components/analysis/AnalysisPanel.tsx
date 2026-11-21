@@ -6,12 +6,15 @@ import { useEffect, useState } from "react";
 import { BLUE, GREEN, RED } from "../../chart/markers";
 import type { AnalysisApi } from "../../hooks/useAnalysis";
 import { TF_LABEL } from "../../config/timeframes";
-import type { TargetKey } from "../../types/api";
+import { load, save } from "../../lib/storage";
+import type { SimSizing, TargetKey } from "../../types/api";
 import { CurrentKPanel } from "./CurrentKPanel";
 import { DecisionTable } from "./DecisionTable";
 import { FactorRelations } from "./FactorRelations";
 import { ReadingGuide } from "./ReadingGuide";
+import { SimulationPanel, type SimVariant } from "./SimulationPanel";
 import { TargetCard } from "./TargetCard";
+import { TrainingDates } from "./TrainingDates";
 
 const rangeLabel = (rng: string) => (rng === "CUSTOM" ? "custom range" : `${rng} range`);
 
@@ -35,14 +38,28 @@ interface Props {
 
 export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
   const r = a.result;
+  const [simVariant, setSimVariantState] = useState<SimVariant>(() => load<SimVariant>("simVariant", "sell_only"));
+  const setSimVariant = (v: SimVariant) => {
+    setSimVariantState(v);
+    save("simVariant", v);
+  };
+  // $100 per BUY (default) or 1 share per BUY
+  const [simSizing, setSimSizingState] = useState<SimSizing>(() => load<SimSizing>("simSizing", "usd"));
+  const setSimSizing = (z: SimSizing) => {
+    setSimSizingState(z);
+    save("simSizing", z);
+  };
   if (!r && !a.loading) return null;
+  const sim = r?.simulation ?? null;
+  const barWord = r?.timeframe === "1Day" ? "day" : r?.timeframe === "1Week" ? "week" : "bar";
   const card = (k: TargetKey) => (
     <TargetCard
       t={r!.targets[k]} barUnit={r!.bar_unit} rangeWindow={r!.range_window} window={r!.window}
       showMarkers={a.visible[k]} onToggle={(on) => a.toggle(k, on)}
       bracket={k === "short" ? {
         value: a.bracket,
-        used: { tp: r!.params.tp_atr, sl: r!.params.sl_atr },
+        used: { mode: r!.params.bracket, tp: r!.params.tp_atr, sl: r!.params.sl_atr },
+        rules: r!.params.dynamic_rules,
         ranges: { tp: r!.params.tp_range, sl: r!.params.sl_range },
         onChange: a.setBracket, onRetrain, busy: a.loading,
       } : undefined}
@@ -97,14 +114,19 @@ export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
               <button className="link" onClick={onRetrain}>Retrain for the current chart</button>
             </div>
           )}
+          <TrainingDates r={r} />
           <CurrentKPanel r={r} intraday={a.intraday} livePrice={livePrice} />
           <ReadingGuide />
           <div className="ta-group">Short-term</div>
           <div className="ta-grid">{card("short")}{card("tp_short")}</div>
           <div className="ta-group">Most recent decisions</div>
           <div className="ta-decisions-list">
-            <DecisionTable t={r.targets.short} barUnit={r.bar_unit} rangeStart={r.range_window.start} />
-            <DecisionTable t={r.targets.tp_short} barUnit={r.bar_unit} rangeStart={r.range_window.start} />
+            {sim && <SimulationPanel sim={sim} variant={simVariant} onVariant={setSimVariant} sizing={simSizing}
+              onSizing={setSimSizing} barUnit={r.bar_unit} />}
+            <DecisionTable t={r.targets.short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
+              sim={sim?.[simSizing][simVariant]} simStart={sim?.start_time} sizing={simSizing} />
+            <DecisionTable t={r.targets.tp_short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
+              sim={sim?.[simSizing][simVariant]} simStart={sim?.start_time} sizing={simSizing} />
           </div>
           <FactorRelations relations={r.relations} years={r.window.years} />
           <details className="ta-method">

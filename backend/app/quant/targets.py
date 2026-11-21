@@ -35,6 +35,9 @@ class TargetSpec:
     horizon_mode: str = "bars"
     # "bar": ATR(14) of the analysed interval; "daily": daily ATR(14) known at the bar (previous day intraday).
     atr_basis: str = "bar"
+    # BUY levels: "fixed" = target_atr / stop_atr x ATR; "dynamic" = set per decision from the chart
+    # (quant/brackets.py; target_atr / stop_atr are then unused).
+    bracket: str = "fixed"
 
     @property
     def sign(self) -> int:
@@ -90,7 +93,8 @@ def session_horizon(session_ord: np.ndarray, minute: np.ndarray, sessions: int) 
 
 
 def triple_barrier(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr_v: np.ndarray, spec: TargetSpec,
-                   end: np.ndarray | None = None, complete: np.ndarray | None = None):
+                   end: np.ndarray | None = None, complete: np.ndarray | None = None,
+                   levels: tuple[np.ndarray, np.ndarray] | None = None):
     """Label every bar.
 
     Returns (label, resolved_at, outcome):
@@ -99,7 +103,8 @@ def triple_barrier(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr_v: 
                    samples resolved strictly before the first day it predicts (no look-ahead)
       outcome      TARGET / STOP / EXPIRED / PENDING
     `end` / `complete` give each bar's horizon (default: spec.horizon bars). A bar that touches both barriers counts
-    as a stop (conservative: the order inside the bar is unknown).
+    as a stop (conservative: the order inside the bar is unknown). `levels` = per-bar (target, stop) prices
+    instead of spec's ATR multiples (dynamic BUY levels).
     """
     n = len(close)
     if end is None or complete is None:
@@ -112,7 +117,9 @@ def triple_barrier(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr_v: 
         a = atr_v[t]
         if not np.isfinite(a) or a <= 0:
             continue
-        tgt, stp = spec.levels(close[t], a)
+        tgt, stp = spec.levels(close[t], a) if levels is None else (levels[0][t], levels[1][t])
+        if not (np.isfinite(tgt) and np.isfinite(stp)):
+            continue
         last = int(end[t])
         for j in range(t + 1, last + 1):
             stopped = low[j] <= stp if up else high[j] >= stp

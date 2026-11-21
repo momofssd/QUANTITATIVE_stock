@@ -53,6 +53,49 @@ export function ReadingGuide() {
           What happened if you had bought at the BUY and sold at the first of: the profit-take, the stop-loss, a SELL signal
           while in profit, or the close after 5 trading sessions. <b>Any-bar entry</b> applies the same exits to every bar.
         </dd>
+        <dt>Projection (current K line)</dt>
+        <dd>
+          The BUY / SELL decision depends on where the K line closes. The app re-runs the same decision (setup and model)
+          for closes from −3 to +3 daily ATR around the current close and shows the price nearest to now at which the K line
+          would become a <b>BUY</b> (projected entry, with its profit-take and stop-loss) and the one at which it would become
+          a <b>SELL</b> (projected selling price). The scenario closer to the live price is shown first; both are drawn on the
+          chart as dashed "Proj. BUY" / "Proj. SELL" lines. It is a what-if on today's close, not a price forecast.
+        </dd>
+        <dt>Fixed ATR vs Dynamic levels</dt>
+        <dd>
+          <b>Fixed ATR</b>: every BUY gets the same profit-take / stop-loss, in multiples of the daily ATR you set.
+          <b> Dynamic</b>: each BUY gets its own levels from the chart at that moment - the stop-loss just below the
+          5-session low, the profit-take at a 50% retracement of the recent fall (rebound) or 1.5× the risk (trend), within
+          limits. The decision tables show each level's distance in ATR and what set it. Switching retrains the model on
+          the new levels, so its AUC / hit rate are not comparable between the two modes - compare the $100 simulation.
+        </dd>
+        <dt>Simulation ($100 or 1 share)</dt>
+        <dd>
+          Over the 30 most recent BUYs: every BUY buys a lot, also while already holding - $100 worth (default) or 1 share
+          - and the next SELL decision sells everything held (all lots at once). With the second option each lot is also
+          sold earlier at its own profit-take or stop-loss. Lots still held are valued at the last close. Win rate and
+          P&amp;L count each lot and are split by the BUY's setup (rebound / trend). Before commissions and slippage.
+        </dd>
+        <dt>Training dates</dt>
+        <dd>
+          The box at the top lists, for this run, the dates today's BUY and SELL models learned from, the dates of the
+          first model in the walk-forward check, how often they were retrained, and the data used. Each click of
+          <b> Find entry points</b> retrains and updates it. On minute / hourly charts the window can be only a few weeks
+          of data - the box warns when it is under a year.
+        </dd>
+        <dt>Decision details (click a row)</dt>
+        <dd>
+          Clicking a BUY or SELL row shows what supported it: the model's probability vs its threshold, which setup
+          conditions held on that bar, how much each factor group (stock momentum, trend, SPY, QQQ, VIX, oil, rates...)
+          pushed the probability up or down compared with typical values, and key indicator values on that bar.
+        </dd>
+        <dt>Daily decisions and intraday buying</dt>
+        <dd>
+          A daily BUY / SELL is decided on the day's <b>close</b> and the backtest buys at that close. During the session
+          the live price is compared with the projected zones: when it is inside one, the panel says the signal is
+          reached intraday - you could act at the live price, but it only becomes a real BUY / SELL if the day closes
+          there. For decisions made (and backtested) during the day, analyse an hourly or minute chart.
+        </dd>
         <dt>Chart range vs model check</dt>
         <dd>
           <b>This chart range</b> covers exactly the bars on the chart (1D = today's session, 1Y = the last year): the

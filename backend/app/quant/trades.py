@@ -21,12 +21,13 @@ REASONS = (TARGET, TRAIL, TP_SIGNAL, TIME, STOP)
 
 
 def simulate(i: int, open_, high, low, close, atr_entry: float, spec: TargetSpec, tp_signal: np.ndarray | None,
-             end: int, complete: bool) -> dict:
+             end: int, complete: bool, levels: tuple[float, float] | None = None) -> dict:
     """Simulate one trade entered at bar i's close whose horizon ends at bar `end` (`complete` = that bar exists
-    as the true end of the horizon). Returns exit details, or the live state if the trade is still open."""
+    as the true end of the horizon). `levels` = (target, stop) prices instead of spec's ATR multiples.
+    Returns exit details, or the live state if the trade is still open."""
     n = len(close)
     entry = float(close[i])
-    target, stop = spec.levels(entry, atr_entry)
+    target, stop = spec.levels(entry, atr_entry) if levels is None else levels
     initial_stop = stop
     risk = entry - initial_stop
     best_close = entry

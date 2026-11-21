@@ -21,7 +21,7 @@ export interface PriceLineDef {
   price: number;
   color: string;
   title: string;
-  style: 0 | 1 | 2; // solid, dotted, dashed
+  style: 0 | 1 | 2 | 3; // solid, dotted, dashed, large dashed
 }
 
 /** What the user has switched on. */
@@ -125,6 +125,10 @@ export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMar
 
 export function buildPriceLines(r: AnalysisResult, vis: MarkerVisibility): PriceLineDef[] {
   const out: PriceLineDef[] = [];
+  // Projected scenarios for the current K line (where it would become a BUY / a SELL).
+  const pj = r.projection;
+  if (pj?.buy && !pj.buy.now) out.push({ price: pj.buy.price, color: GREEN, title: "Proj. BUY", style: 3 });
+  if (pj?.sell && !pj.sell.now) out.push({ price: pj.sell.price, color: "#d35400", title: "Proj. SELL", style: 3 });
   if (!vis.short) return out;
   const t = r.targets.short;
   const ot = t.open_trade?.trade;

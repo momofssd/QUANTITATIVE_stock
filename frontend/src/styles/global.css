@@ -488,3 +488,109 @@ input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; 
 .ta-dec-table tr.out-range td.up, .ta-dec-table tr.out-range td.down { opacity: .7; }
 .ta-out-tag { margin-left: 6px; font-size: 10.5px; color: var(--ink-3); border: 1px solid var(--rule); border-radius: 8px; padding: 0 5px; }
 @media (max-width: 640px) { .ta-stats.four { grid-template-columns: repeat(2, 1fr); } }
+
+/* Profit-take / stop-loss mode + per-decision level notes */
+.ta-bracket .seg { flex: none; }
+.ta-bracket-dyn { flex: 1 1 260px; line-height: 1.45; }
+.lvl-basis { display: block; font-size: 10.5px; color: var(--ink-3); font-weight: 400; white-space: nowrap; }
+.ck-plan .lvl-basis { display: inline; margin-left: 4px; }
+/* $100 simulation */
+.sim-body { padding: 10px 12px 0; }
+.sim-body .seg { max-width: 100%; overflow-x: auto; margin-bottom: 10px; }
+.sim-body .seg button { flex: none; }
+.sim-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.sim-stats small { font-size: 12px; font-weight: 700; }
+.sim-panel .ta-note { padding: 0 0 10px; }
+.sim-panel .table-scroll { border-top: 1px solid var(--rule); }
+.sim-panel tr.sim-open td { background: #f4f8fd; }
+.ta-dec-table td.sim-na { color: var(--ink-3); }
+@media (max-width: 900px) { .sim-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .sim-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* $100 simulation: per-setup table */
+.sim-stats b + small { color: var(--ink-3); font-weight: 400; font-size: 11px; }
+.sim-setups { margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--radius); }
+.sim-setups th, .sim-setups td { padding: 6px 10px; font-size: 12.5px; }
+.sim-setups td small { color: var(--ink-3); font-size: 11px; }
+.sim-setups tr.sim-all td { border-top: 2px solid var(--rule); background: #fafafa; }
+.sim-stats small.up { color: var(--green); font-weight: 700; }
+.sim-stats small.down { color: var(--red); font-weight: 700; }
+
+/* Current K: projected BUY entry / SELL price (closer scenario first) */
+.ck-proj { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--rule); border-left-width: 4px; border-radius: 3px;
+  background: #fff; font-size: 13px; line-height: 1.5; }
+.ck-proj.buy { border-left-color: var(--green); background: #f6fbf4; }
+.ck-proj.sell { border-left-color: #d35400; background: #fff8f2; }
+.ck-proj.none { color: var(--ink-2); background: #fafafa; }
+.ck-proj-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 4px; }
+.ck-proj-h small { color: var(--ink-3); font-size: 11.5px; }
+.ck-proj-s { margin-top: 4px; }
+.ck-proj-s.main { font-size: 14px; }
+.ck-proj-s:not(.main) { color: var(--ink-2); font-size: 12.5px; }
+.ck-proj-s.muted { color: var(--ink-3); font-size: 12.5px; }
+.ck-proj-d { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
+.ck-proj-d small { color: var(--ink-3); }
+.ck-proj-tag { display: inline-block; min-width: 36px; text-align: center; margin-right: 8px; padding: 0 6px; border-radius: 3px;
+  font-size: 11px; font-weight: 700; color: #fff; vertical-align: 1px; }
+.ck-proj-tag.buy { background: var(--green); }
+.ck-proj-tag.sell { background: #d35400; }
+
+/* Current K: live price inside a projected BUY / SELL zone (intraday trigger) */
+.ck-trigger { margin: 6px 0; padding: 7px 10px; border-radius: 3px; font-size: 12.5px; line-height: 1.45; }
+.ck-trigger.buy { background: var(--green-tint); border: 1px solid #b9d8b2; color: #1f4f16; }
+.ck-trigger.sell { background: #fff1e6; border: 1px solid #f0c8a8; color: #7a3300; }
+.ck-proj-note { margin-top: 6px; }
+.sim-switches { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 10px; }
+.sim-switches .seg { margin-bottom: 0; }
+
+/* Decision tables: expandable rows with what supported the decision */
+.ta-dec-table tr.dec-row { cursor: pointer; }
+.ta-dec-table tr.dec-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ta-dec-table tr.dec-row.expanded td { background: #f4f8fd; }
+.dec-chev { display: inline-block; width: 14px; color: var(--ink-3); font-size: 11px; }
+.ta-dec-table tr.dec-why > td { white-space: normal; text-align: left; padding: 0; background: #fbfcfe;
+  border-bottom: 2px solid var(--rule); }
+.ta-dec-table tr.dec-why:hover { background: none; }
+.why { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 0.85fr); gap: 14px 22px;
+  padding: 12px 16px 14px 30px; font-size: 12.5px; color: var(--ink); }
+.why h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-3); font-weight: 600; }
+.why h4:not(:first-child) { margin-top: 12px; }
+.why-p { margin: 0 0 6px; line-height: 1.5; }
+.why-setup { border: 1px solid var(--rule); border-radius: 3px; padding: 6px 8px; margin-bottom: 6px; background: #fff; }
+.why-setup.on { border-color: #b9d8b2; }
+.why-setup.fired { box-shadow: inset 3px 0 0 var(--green); }
+.why-setup-h { font-size: 12px; margin-bottom: 3px; }
+.why-tag { margin-left: 6px; font-size: 10.5px; color: #fff; background: var(--green); border-radius: 8px; padding: 0 6px; }
+.why-setup ul { list-style: none; margin: 0; padding: 0; }
+.why-setup li { color: var(--ink-3); font-size: 12px; padding: 1px 0; }
+.why-setup li.ok { color: #1f4f16; }
+.why-sub { margin: 0 0 8px; }
+.why-f { display: grid; grid-template-columns: 150px 1fr 44px; gap: 8px; align-items: center; padding: 2px 0; }
+.why-f-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.why-f-bar { position: relative; height: 10px; background: #f0f0f0; border-radius: 2px; }
+.why-f-bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: #bbb; }
+.why-f-bar i { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
+.why-f-bar i.pos { left: 50%; background: var(--green); }
+.why-f-bar i.neg { right: 50%; background: var(--red); }
+.why-f b { text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+.why-values { width: 100%; border-collapse: collapse; font-size: 12px; }
+.why-values th { text-align: left; font-weight: 400; color: var(--ink-2); padding: 2px 8px 2px 0; }
+.why-values td { text-align: right; font-variant-numeric: tabular-nums; padding: 2px 0; white-space: nowrap; }
+@media (max-width: 1100px) { .why { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (max-width: 700px) { .why { grid-template-columns: minmax(0, 1fr); padding-left: 16px; } .why-f { grid-template-columns: 120px 1fr 40px; } }
+/* keep the expanded details readable when the table scrolls sideways */
+.ta-dec-table tr.dec-why .why { position: sticky; left: 0; max-width: calc(100vw - 48px); box-sizing: border-box; }
+.why-values th, .why-values td { background: none; border-bottom: 1px solid var(--rule-soft); }
+
+/* Training dates for this run (shown after every retrain) */
+.ta-train { margin: 12px 16px 0; padding: 10px 12px; border: 1px solid #c5d8ee; border-radius: 3px; background: #f5f9fd;
+  font-size: 12.5px; }
+.ta-train-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 6px; }
+.ta-train-h b { font-size: 13px; }
+.ta-train-h span { color: var(--ink-3); font-size: 12px; }
+.ta-train-t { background: #fff; border: 1px solid var(--rule); }
+.ta-train-t th, .ta-train-t td { padding: 5px 10px; font-size: 12.5px; }
+.ta-train-t td small { display: block; color: var(--ink-3); font-size: 11px; }
+.ta-train .ta-note { margin-top: 8px; }
+.ta-train-warn { margin-top: 8px; padding: 6px 10px; background: #fff8e5; border: 1px solid #e6c77a; border-radius: 3px;
+  color: #6b4a00; }
+.ta-train-disc { margin: 8px 0 0; font-size: 11.5px; color: var(--ink-2); line-height: 1.45; }

@@ -16,6 +16,7 @@ export interface BracketEditor {
   value: Bracket;               // what the next retrain will use
   used: Bracket;                // what this result was trained with
   ranges: { tp: [number, number]; sl: [number, number] };
+  rules: AnalysisResult["params"]["dynamic_rules"];
   onChange: (b: Bracket) => void;
   onRetrain: () => void;
   busy: boolean;
@@ -38,31 +39,48 @@ function BracketForm({ b }: { b: BracketEditor }) {
     setTp(String(b.value.tp));
     setSl(String(b.value.sl));
   }, [b.value.tp, b.value.sl]);
+  const mode = b.value.mode;
   const tpN = parseFloat(tp), slN = parseFloat(sl);
   const tpOk = Number.isFinite(tpN) && tpN >= b.ranges.tp[0] && tpN <= b.ranges.tp[1];
   const slOk = Number.isFinite(slN) && slN >= b.ranges.sl[0] && slN <= b.ranges.sl[1];
-  const changed = tpOk && slOk && (tpN !== b.used.tp || slN !== b.used.sl);
+  const changed = mode !== b.used.mode
+    || (mode === "fixed" && tpOk && slOk && (tpN !== b.used.tp || slN !== b.used.sl));
   const commit = (ntp: string, nsl: string) => {
     const a = parseFloat(ntp), c = parseFloat(nsl);
     if (Number.isFinite(a) && Number.isFinite(c) && a >= b.ranges.tp[0] && a <= b.ranges.tp[1]
-      && c >= b.ranges.sl[0] && c <= b.ranges.sl[1]) b.onChange({ tp: a, sl: c });
+      && c >= b.ranges.sl[0] && c <= b.ranges.sl[1]) b.onChange({ mode, tp: a, sl: c });
   };
   const breakeven = tpOk && slOk ? slN / (tpN + slN) : null;
   return (
     <div className="ta-bracket">
-      <label>Profit-take
-        <input type="number" step={0.25} min={b.ranges.tp[0]} max={b.ranges.tp[1]} value={tp} className={tpOk ? "" : "bad"}
-          onChange={(e) => { setTp(e.target.value); commit(e.target.value, sl); }} /> × ATR
-      </label>
-      <label>Stop-loss
-        <input type="number" step={0.25} min={b.ranges.sl[0]} max={b.ranges.sl[1]} value={sl} className={slOk ? "" : "bad"}
-          onChange={(e) => { setSl(e.target.value); commit(tp, e.target.value); }} /> × ATR
-      </label>
-      <span className="ta-bracket-info">
-        reward : risk {tpOk && slOk ? (tpN / slN).toFixed(2) : "—"} · break-even win rate {pct(breakeven)}
-      </span>
+      <div className="seg seg-sm" role="group" aria-label="Profit-take and stop-loss">
+        <button className={mode === "fixed" ? "on" : ""} onClick={() => b.onChange({ ...b.value, mode: "fixed" })}
+          title="The same multiples of the daily ATR for every decision">Fixed ATR</button>
+        <button className={mode === "dynamic" ? "on" : ""} onClick={() => b.onChange({ ...b.value, mode: "dynamic" })}
+          title="Set per decision from the chart: swing low, retracement, reward:risk">Dynamic</button>
+      </div>
+      {mode === "fixed" ? (
+        <>
+          <label>Profit-take
+            <input type="number" step={0.25} min={b.ranges.tp[0]} max={b.ranges.tp[1]} value={tp} className={tpOk ? "" : "bad"}
+              onChange={(e) => { setTp(e.target.value); commit(e.target.value, sl); }} /> × ATR
+          </label>
+          <label>Stop-loss
+            <input type="number" step={0.25} min={b.ranges.sl[0]} max={b.ranges.sl[1]} value={sl} className={slOk ? "" : "bad"}
+              onChange={(e) => { setSl(e.target.value); commit(tp, e.target.value); }} /> × ATR
+          </label>
+          <span className="ta-bracket-info">
+            reward : risk {tpOk && slOk ? (tpN / slN).toFixed(2) : "—"} · break-even win rate {pct(breakeven)}
+          </span>
+        </>
+      ) : (
+        <span className="ta-bracket-info ta-bracket-dyn">
+          Per decision · <b>stop-loss</b> {b.rules.stop} · <b>profit-take</b> rebound: {b.rules.rebound}; trend:{" "}
+          {b.rules.trend}
+        </span>
+      )}
       <button className="btn btn-primary" disabled={!changed || b.busy} onClick={b.onRetrain}
-        title={changed ? "Retrain with these levels" : "Change a level to retrain"}>
+        title={changed ? "Retrain with these levels" : "Change the levels to retrain"}>
         Retrain
       </button>
     </div>
@@ -99,9 +117,11 @@ function ExitRule({ t, unit }: { t: TargetResult; unit: string }) {
   const r = t.trades?.rules;
   if (!r) return null;
   const window = r.horizon_mode === "sessions" ? `${r.horizon} trading sessions` : `${r.horizon} ${unit}`;
+  const dyn = r.bracket === "dynamic";
   return (
     <div className="ta-exit-rule">
-      Each BUY is sold at the first of: profit-take (+{r.target_atr}× ATR) · stop-loss (−{r.stop_atr}× ATR)
+      Each BUY is sold at the first of: profit-take ({dyn ? "its own level" : `+${r.target_atr}× ATR`}) · stop-loss
+      ({dyn ? "its own level" : `−${r.stop_atr}× ATR`})
       {r.trail_after_atr > 0 && <> · trailing stop {r.trail_atr} ATR below the highest close once up {r.trail_after_atr} ATR</>}
       {r.exit_with && <> · a SELL signal while the trade is in profit</>} · the close after {window}.
     </div>

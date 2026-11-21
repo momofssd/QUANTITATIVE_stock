@@ -5,7 +5,7 @@
 import { SETUP_LABEL } from "../../chart/markers";
 import { TF_LABEL } from "../../config/timeframes";
 import { isNum, price } from "../../lib/format";
-import type { AnalysisResult, CurrentSignal, IntradayCheck, SetupExplain } from "../../types/api";
+import type { AnalysisResult, CurrentSignal, IntradayCheck, Projection, ProjectedSide, SetupExplain } from "../../types/api";
 
 const pct = (v: number | null | undefined) => (isNum(v) ? `${Math.round(v * 100)}%` : "—");
 type Tone = "ok" | "soft" | "warn" | "bad" | "none";
@@ -55,6 +55,109 @@ function decisionText(kind: "buy" | "sell", c: CurrentSignal, iv: IntradayCheck 
   if (v === "against") return { tone: "warn", title: "HOLD for now — 5-minute action still strong", sub: "Interim-top signal, but today's tape is not weakening yet" };
   if (v === "mixed") return { tone: "soft", title: "SELL / take profit — unconfirmed", sub: "Interim top; today's 5-minute action is mixed" };
   return { tone: "soft", title: "SELL / take profit", sub: "Interim top; no 5-minute check available" };
+}
+
+const signed = (v: number, d = 2) => `${v > 0 ? "+" : ""}${v.toFixed(d)}`;
+
+/** "closes at or above $X" / "closes between $X and $Y" / "closes at about $X". */
+function zoneText(v: ProjectedSide): string {
+  if (v.zone_open) return `closes at or ${v.move_atr < 0 ? "below" : "above"} ${price(v.price)}`;
+  if (!v.zone || v.zone[0] === v.zone[1]) return `closes at about ${price(v.price)}`;
+  return `closes between ${price(v.zone[0])} and ${price(v.zone[1])}`;
+}
+
+function ScenarioLine({ side, v, live, main }: { side: "buy" | "sell"; v: ProjectedSide; live: number | null; main: boolean }) {
+  const isBuy = side === "buy";
+  const name = isBuy ? "BUY" : "SELL / take profit";
+  if (v.now) {
+    return (
+      <div className={`ck-proj-s ${side} ${main ? "main" : ""}`}>
+        <span className={`ck-proj-tag ${side}`}>{isBuy ? "BUY" : "SELL"}</span>
+        <b>{name} now</b> at {price(v.price)}: this K line already is a {isBuy ? "BUY" : "SELL"} (see below).
+      </div>
+    );
+  }
+  const fromLive = isNum(live) ? (v.price / live - 1) * 100 : null;
+  return (
+    <div className={`ck-proj-s ${side} ${main ? "main" : ""}`}>
+      <span className={`ck-proj-tag ${side}`}>{isBuy ? "BUY" : "SELL"}</span>
+      <b>{isBuy ? "Projected entry" : "Projected selling price"} {price(v.price)}</b>{" "}
+      <span className={v.move_pct >= 0 ? "up" : "down"}>
+        ({signed(v.move_pct)}% · {signed(v.move_atr)} ATR from the close{fromLive !== null && <>; {signed(fromLive)}% from live</>})
+      </span>
+      {main && (
+        <div className="ck-proj-d">
+          The K line becomes a {isBuy ? "BUY" : "SELL"} if it {zoneText(v)}
+          {isBuy && v.setup ? ` (${SETUP_LABEL[v.setup as Exclude<typeof v.setup, "">]} setup` : " (interim-top setup"}
+          {isNum(v.prob) && isNum(v.threshold) && <>, model {pct(v.prob)} ≥ {pct(v.threshold)}</>}).
+          {isBuy && isNum(v.target) && isNum(v.stop) && (
+            <> At that entry: profit-take <b className="up">{price(v.target)}</b>{v.target_basis && <small> ({v.target_basis})</small>},
+              stop-loss <b className="down">{price(v.stop)}</b>{v.stop_basis && <small> ({v.stop_basis})</small>}.</>
+          )}
+          {!isBuy && isNum(v.target) && <> Expected pullback to <b className="down">{price(v.target)}</b>.</>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Is a live price inside the zone of closes that would trigger this scenario? */
+function inZone(v: ProjectedSide | null, live: number | null): boolean {
+  if (!v || v.now || !isNum(live)) return false;
+  if (v.zone_open) return v.move_atr < 0 ? live <= v.price : live >= v.price;
+  return !!v.zone && live >= v.zone[0] && live <= v.zone[1];
+}
+
+/** Live price inside a BUY / SELL zone during the session: the signal is reached now (provisional until the close). */
+function IntradayTrigger({ side, v, live, unit }: { side: "buy" | "sell"; v: ProjectedSide; live: number; unit: string }) {
+  const isBuy = side === "buy";
+  return (
+    <div className={`ck-trigger ${side}`}>
+      <b>{isBuy ? "BUY" : "SELL"} signal reached intraday</b>: live {price(live)} is inside the {isBuy ? "BUY" : "SELL"} zone
+      ({zoneText(v).replace(/^closes /, "")}). {isBuy ? "Buying" : "Selling"} now = an intraday {isBuy ? "entry" : "exit"} at
+      about {price(live)} instead of waiting for the close. Provisional: the {unit} K line becomes a{" "}
+      {isBuy ? "BUY" : "SELL"} only if it <i>closes</i> in the zone; if the price leaves the zone before the close, the signal is gone.
+    </div>
+  );
+}
+
+/** The closer of the two scenarios (to the live price, else the analysed close), with the other one below it. */
+function ProjectionBox({ pj, live, unit }: { pj: Projection; live: number | null; unit: string }) {
+  const ref = isNum(live) ? live : pj.close;
+  const dist = (v: ProjectedSide | null) => (v ? (v.now ? 0 : Math.abs(v.price - ref)) : Infinity);
+  const sides = (["buy", "sell"] as const).filter((s) => pj[s]);
+  const lo = pj.close - pj.range_atr * pj.atr, hi = pj.close + pj.range_atr * pj.atr;
+  if (sides.length === 0) {
+    return (
+      <div className="ck-proj none">
+        <b>Projection:</b> no BUY or SELL within ±{pj.range_atr} daily ATR of the close ({price(lo)} – {price(hi)}): no close
+        in that range would turn this K line into a BUY or a SELL.
+      </div>
+    );
+  }
+  const closer = dist(pj.buy) <= dist(pj.sell) ? "buy" : "sell";
+  const other = closer === "buy" ? "sell" : "buy";
+  return (
+    <div className={`ck-proj ${closer}`}>
+      <div className="ck-proj-h">
+        <b>Projection · closer scenario: {closer === "buy" ? "BUY" : "SELL"}</b>
+        <small>closes from {price(lo)} to {price(hi)} (±{pj.range_atr} daily ATR) tested; closer to {isNum(live) ? "the live price" : "the close"}</small>
+      </div>
+      {(["buy", "sell"] as const).map((s) => inZone(pj[s], live) && (
+        <IntradayTrigger key={s} side={s} v={pj[s]!} live={live!} unit={unit} />
+      ))}
+      <ScenarioLine side={closer} v={pj[closer]!} live={live} main />
+      {pj[other]
+        ? <ScenarioLine side={other} v={pj[other]!} live={live} main={false} />
+        : <div className="ck-proj-s muted">No {other === "buy" ? "BUY" : "SELL"} within ±{pj.range_atr} ATR.</div>}
+      <p className="ta-note ck-proj-note">
+        Decisions are made on the K line's <b>close</b> (the backtest buys / sells at that close). While the {unit} K line
+        is still forming, the live price is checked against these zones on every tick, so a BUY / SELL can be acted on
+        during the session (provisional until the close). Zones use the bar as it was at analysis time; press Find entry
+        points to refresh them.
+      </p>
+    </div>
+  );
 }
 
 function IntradayBox({ iv }: { iv: IntradayCheck | null }) {
@@ -107,6 +210,8 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
         Current K line <b>{cb.date}</b> · {TF_LABEL[r.timeframe]}
         {isNum(livePrice) && <> · live price <b>{price(livePrice)}</b></>}
       </div>
+      {r.projection && <ProjectionBox pj={r.projection} live={livePrice}
+        unit={r.timeframe === "1Day" ? "daily" : r.timeframe === "1Week" ? "weekly" : TF_LABEL[r.timeframe]} />}
       <div className="ck-grid">
         <div className="ck-box">
           <div className={`ck-decision ${db.tone}`}>
@@ -118,7 +223,12 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
               <table className="kv ck-plan">
                 <tbody>
                   <tr><th>Entry</th><td>{price(cb.entry)}</td><th>Chase limit</th><td>{price(cb.chase_limit)}</td></tr>
-                  <tr><th>Profit-take</th><td className="up">{price(cb.target)}</td><th>Stop-loss</th><td className="down">{price(cb.stop)}</td></tr>
+                  <tr>
+                    <th>Profit-take</th>
+                    <td className="up">{price(cb.target)} <small className="lvl-basis">+{cb.tp_atr?.toFixed(2)} ATR · {cb.target_basis}</small></td>
+                    <th>Stop-loss</th>
+                    <td className="down">{price(cb.stop)} <small className="lvl-basis">−{cb.sl_atr?.toFixed(2)} ATR · {cb.stop_basis}</small></td>
+                  </tr>
                   <tr>
                     <th>Daily ATR</th><td>{price(cb.atr)}</td>
                     <th>Reward : risk</th><td>{((cb.target - cb.entry) / (cb.entry - cb.stop)).toFixed(2)}</td>

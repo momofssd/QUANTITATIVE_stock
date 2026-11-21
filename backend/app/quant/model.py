@@ -2,7 +2,7 @@
 were already known on the prediction date, using a rolling window of the preceding years of daily bars."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -58,6 +58,12 @@ class WalkForward:
     base: np.ndarray        # training base rate of the model that produced each prediction
     threshold: np.ndarray   # signal threshold per bar
     folds: int
+    # keep=True: (start, end, model, training medians per feature) for every fold - to explain single decisions
+    models: list = field(default_factory=list)
+
+    def fold_at(self, i: int):
+        """The fold whose model predicted bar i (None if not kept / no model)."""
+        return next((f for f in self.models if f[0] <= i < f[1]), None)
 
 
 def train_mask(y: np.ndarray, resolved_at: np.ndarray, cutoff: int, window: int) -> np.ndarray:
@@ -68,11 +74,12 @@ def train_mask(y: np.ndarray, resolved_at: np.ndarray, cutoff: int, window: int)
 
 
 def walk_forward(X: np.ndarray, y: np.ndarray, resolved_at: np.ndarray, start: int, window: int, step: int,
-                 kind: str = "hgb") -> WalkForward:
+                 kind: str = "hgb", keep: bool = False) -> WalkForward:
     n = len(y)
     prob = np.full(n, np.nan)
     base = np.full(n, np.nan)
     folds = 0
+    kept: list = []
     for s in range(start, n, step):
         e = min(s + step, n)
         m = train_mask(y, resolved_at, s, window)
@@ -83,8 +90,11 @@ def walk_forward(X: np.ndarray, y: np.ndarray, resolved_at: np.ndarray, start: i
         prob[s:e] = model.predict_proba(X[s:e])[:, 1]
         base[s:e] = yt.mean()
         folds += 1
+        if keep:
+            with np.errstate(all="ignore"):
+                kept.append((s, e, model, np.nanmedian(X[m], axis=0)))
     thr = np.array([threshold_for(b) if np.isfinite(b) else np.nan for b in base])
-    return WalkForward(prob, base, thr, folds)
+    return WalkForward(prob, base, thr, folds, kept)
 
 
 def fit_latest(X: np.ndarray, y: np.ndarray, resolved_at: np.ndarray, window: int, kind: str = "hgb"):

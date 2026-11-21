@@ -20,10 +20,12 @@ async def analysis(
     extended: bool = Query(False, description="intraday: include pre/post-market bars"),
     tp_atr: float = Query(1.5, description="short-term profit-take, x daily ATR (0.5-5)"),
     sl_atr: float = Query(1.0, description="short-term stop-loss, x daily ATR (0.25-5)"),
+    bracket: str = Query("fixed", description="BUY profit-take / stop-loss: 'fixed' (tp_atr / sl_atr) or "
+                                              "'dynamic' (set per decision from the chart)"),
     refresh: bool = Query(False, description="ignore the few-minute result cache (retrain)"),
 ):
     req = AnalysisRequest(symbol=require_symbol(symbol), range=range, timeframe=timeframe,
-                          start=start, end=end, extended=extended, tp_atr=tp_atr, sl_atr=sl_atr)
+                          start=start, end=end, extended=extended, tp_atr=tp_atr, sl_atr=sl_atr, bracket=bracket)
     return await analysis_service.run_analysis(req, refresh=refresh)
 
 

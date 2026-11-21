@@ -57,6 +57,7 @@ export interface AnalysisQuery {
   extended?: boolean;
   tp_atr?: number;   // short-term profit-take, x daily ATR
   sl_atr?: number;   // short-term stop-loss, x daily ATR
+  bracket?: "fixed" | "dynamic"; // BUY levels: fixed multiples or set per decision
   refresh?: boolean;
 }
 

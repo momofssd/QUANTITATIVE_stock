@@ -7,7 +7,11 @@ export const pct = (v: number | null | undefined, d = 0) =>
 export const signedPct = (v: number | null | undefined, d = 2) =>
   v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`;
 
-export const dirCls = (v: number | null | undefined) =>
+/** "+$12.40" / "−$3.10". */
+export const usd = (v: number | null | undefined) =>
+  v === null || v === undefined ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
+
+export const dirCls =(v: number | null | undefined) =>
   v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down";
 
 /** "3d" on daily, "3w" on weekly, "3 bars" on intraday intervals. */
@@ -31,6 +35,7 @@ export function rule(t: TargetResult, unit: string): string {
     ? `${s.horizon} trading sessions`
     : unit.endsWith("bars") ? `${s.horizon} × ${unit}` : `${s.horizon} ${unit}`;
   if (s.key === "short") {
+    if (s.bracket === "dynamic") return `Profit-take before stop-loss within ${window} - levels set per decision from the chart`;
     return `Profit-take +${s.target_atr}× ${atrName} before stop-loss −${s.stop_atr}× ${atrName} within ${window}`;
   }
   return s.direction === "up"

@@ -163,6 +163,121 @@ export type TargetKey = "short" | "tp_short";
 export type Outcome = "target" | "stop" | "expired" | "pending";
 export type ExitReason = "target" | "trailing stop" | "take-profit signal" | "time limit" | "stop";
 
+export type BracketMode = "fixed" | "dynamic";
+
+/** Rows (bars) one model learned from. */
+export interface TrainSpan {
+  start: string;
+  end: string;
+  rows: number;      // bars with a known outcome inside the rolling window
+  sessions: number;  // trading days they cover
+  days: number;      // calendar days from start to end
+}
+
+export interface TrainingInfo {
+  trained_at: string;   // "YYYY-MM-DD HH:MM ET"
+  train_bars: number;   // rolling window (bars)
+  min_train: number;
+  data: { start: string; end: string; bars: number };     // the interval's bars
+  daily: { start: string; end: string; bars: number };    // the stock's daily bars
+  factors: { start: string; end: string };                // Yahoo factors
+  targets: Record<"short" | "tp_short", {
+    folds: number;
+    retrain_every: number;
+    first: (TrainSpan & { predicts_from: string }) | null;  // the oldest walk-forward model
+    current: TrainSpan | null;                              // today's model (current K decision, projection)
+  }>;
+}
+
+/** One projected scenario for the current K line. "now" = the K line already is a BUY / SELL. */
+export interface ProjectedSide {
+  now: boolean;
+  price: number;         // projected BUY entry / selling price (the close that would trigger it)
+  move_atr: number;      // from the current close, x daily ATR
+  move_pct: number;
+  zone?: [number, number];   // closes in this range trigger it ...
+  zone_open?: boolean;       // ... and it still holds at the end of the searched range
+  prob?: number;
+  threshold?: number;
+  setup?: SetupName;         // BUY: rebound / trend at that price
+  target?: number;           // BUY: profit-take; SELL: pullback to
+  stop?: number;             // BUY: stop-loss; SELL: invalid above
+  tp_atr?: number; sl_atr?: number; target_basis?: string; stop_basis?: string;
+}
+
+export interface Projection {
+  close: number;
+  atr: number;
+  range_atr: number;     // searched: close +/- this x ATR
+  step_atr: number;
+  buy: ProjectedSide | null;
+  sell: ProjectedSide | null;
+  closer: "buy" | "sell" | null;   // relative to the analysed close (the UI re-checks against the live price)
+}
+
+/** One $100 lot of the simulation (every BUY buys one). */
+export interface SimTrade {
+  status: "closed" | "open";
+  reason: "sell" | "target" | "stop" | "open";
+  setup: SetupName;  // setup of the BUY that bought the lot
+  qty: number;       // shares ($100 / price, or 1)
+  cost: number;      // dollars paid
+  buy_time: number; buy_date: string; buy_price: number;
+  sell_time: number; sell_date: string; sell_price: number; // open: the last close
+  bars: number;
+  pnl: number;       // dollars
+  pnl_pct: number;
+}
+
+/** Win rate and P&L over a set of lots (all, or one setup). */
+export interface SimTally {
+  lots: number; closed: number; open: number; wins: number; losses: number; win_rate: number | null;
+  realized_pnl: number; open_pnl: number; total_pnl: number;
+  invested: number; return_on_invested_pct: number | null;
+  avg_pnl: number | null; best_pnl: number | null; worst_pnl: number | null; avg_bars: number | null;
+}
+
+export interface SimRun {
+  trades: SimTrade[]; // newest lot first
+  summary: SimTally & {
+    max_lots: number;          // most lots held at the same time
+    max_capital: number;       // ... in dollars
+    return_pct: number | null; // total P&L on max_capital
+    sells_used: number;        // SELL decisions that sold something
+  };
+  by_setup: { rebound: SimTally; trend: SimTally };
+}
+
+/** One sizing of the simulation: every BUY buys $100 worth ("usd") or 1 share ("share"). */
+export interface SimBook {
+  sell_only: SimRun;    // the next SELL decision sells every lot held
+  with_bracket: SimRun; // ... or each lot at its BUY's profit-take / stop-loss if that comes first
+  hold_all: { pnl: number; pnl_pct: number }; // the same BUYs, never sold
+  buy_hold: { pnl: number; pnl_pct: number }; // one lot bought at the first BUY and held
+}
+
+export type SimSizing = "usd" | "share";
+
+export interface Simulation {
+  stake: number;
+  listed: number;       // the simulation covers this many most recent BUYs
+  start_time: number;
+  start_date: string;
+  end_date: string;
+  buys: number;
+  sells: number;
+  usd: SimBook;
+  share: SimBook;
+}
+
+/** What supported a decision (expanded decision row). */
+export interface DecisionWhy {
+  base_rate: number | null;                      // training base rate of the model that decided
+  factors: { group: string; delta: number }[];   // pts of P added by the group's real values vs typical values
+  setups: Partial<Record<"rebound" | "trend" | "top", SetupExplain>>;
+  values: { label: string; value: number; unit: string; digits: number; signed: boolean }[];
+}
+
 export interface TargetSpec {
   key: TargetKey;
   label: string;
@@ -178,6 +293,7 @@ export interface TargetSpec {
   exit_with: string;         // entries: take-profit target whose signal can close the trade ("" = none)
   horizon_mode: "bars" | "sessions"; // horizon counted in bars of the interval or in trading sessions
   atr_basis: "bar" | "daily";        // ATR of the interval's bars or daily ATR
+  bracket: BracketMode;              // BUY levels: fixed ATR multiples or set per decision
 }
 
 /** How an entry signal's trade ended (or where it stands if still open). Returns are % before costs. */
@@ -206,12 +322,17 @@ export interface EntrySignal {
   atr: number;
   target: number;
   stop: number;
+  tp_atr: number;        // distance to the profit-take, x ATR
+  sl_atr: number;        // distance to the stop-loss, x ATR
+  target_basis: string;  // what set the profit-take ("1.5x risk", "50% retracement", "1.5 ATR", ...)
+  stop_basis: string;    // what set the stop-loss ("5-session low", "min 0.75 ATR", "1 ATR", ...)
   outcome: Outcome;
   resolved_date: string | null;
   days: number | null;
   trade?: TradeView; // entries only
   setup: SetupName;  // which rule-based setup the bar was in
   in_range: boolean; // inside the chart's own range (vs only in the longer model-check window)
+  why?: DecisionWhy; // what supported the decision
 }
 
 export type SetupName = "rebound" | "trend" | "top" | "";
@@ -229,6 +350,10 @@ export interface CurrentSignal {
   atr: number;
   target: number;
   stop: number;
+  tp_atr: number;        // distance to the profit-take, x ATR
+  sl_atr: number;        // distance to the stop-loss, x ATR
+  target_basis: string;  // what set the profit-take ("1.5x risk", "50% retracement", "1.5 ATR", ...)
+  stop_basis: string;    // what set the stop-loss ("5-session low", "min 0.75 ATR", "1 ATR", ...)
   chase_limit: number | null; // BUY: don't enter above this
   horizon_days: number;
 }
@@ -305,7 +430,7 @@ export interface TradesBlock {
   range_buy_hold_pct: number;
   rules: {
     stop_atr: number; target_atr: number; trail_after_atr: number; trail_atr: number; horizon: number;
-    horizon_mode: "bars" | "sessions"; atr_basis: "bar" | "daily"; exit_with: string;
+    horizon_mode: "bars" | "sessions"; atr_basis: "bar" | "daily"; exit_with: string; bracket: BracketMode;
   };
 }
 
@@ -346,7 +471,17 @@ export interface AnalysisResult {
     model: string; training: string; signal_rule: string; features: number; atr: string; factor_alignment: string;
   };
   sources: { stock: string; factors: string; factor_tickers: Record<string, string> };
-  params: { tp_atr: number; sl_atr: number; tp_range: [number, number]; sl_range: [number, number] };
+  params: {
+    tp_atr: number; sl_atr: number; tp_range: [number, number]; sl_range: [number, number];
+    bracket: BracketMode;
+    dynamic_rules: { stop: string; rebound: string; trend: string };
+  };
+  /** $100 per BUY over the most recent decisions (null when there is no BUY). */
+  simulation: Simulation | null;
+  /** The actual dates every model of this run learned from. */
+  training: TrainingInfo;
+  /** At which close would the current K line become a BUY / a SELL (null when it cannot be computed)? */
+  projection: Projection | null;
   targets: Record<TargetKey, TargetResult>;
   setups_now: Record<"rebound" | "trend" | "top", SetupExplain>;
   chase_atr: number;
