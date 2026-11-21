@@ -17,6 +17,7 @@ import numpy as np
 from .targets import TargetSpec
 
 STOP, TRAIL, TARGET, TP_SIGNAL, TIME = "stop", "trailing stop", "target", "take-profit signal", "time limit"
+_NEVER = 1 << 62
 REASONS = (TARGET, TRAIL, TP_SIGNAL, TIME, STOP)
 
 
@@ -37,6 +38,29 @@ def simulate(i: int, open_, high, low, close, atr_entry: float, spec: TargetSpec
     def done(j: int, price: float, reason: str) -> dict:
         return {"status": "closed", "exit_index": j, "price": float(price), "reason": reason,
                 "return_pct": float(price / entry - 1), "r": float((price - entry) / risk), "days": j - i}
+
+    if not trail:
+        # Plain bracket (vectorised - horizons can be thousands of intraday bars): the first bar with a stop /
+        # target / take-profit signal in profit, in that order within a bar; else the time limit.
+        if end > i:
+            seg = slice(i + 1, end + 1)
+            hits = [low[seg] <= stop, high[seg] >= target]
+            if tp_signal is not None:
+                hits.append(np.asarray(tp_signal[seg], dtype=bool) & (close[seg] > entry))
+            firsts = [int(h.argmax()) if h.any() else _NEVER for h in hits]
+            k = min(firsts)
+            if k != _NEVER:
+                j = i + 1 + k
+                if firsts[0] == k:
+                    return done(j, min(open_[j], stop), STOP)
+                if firsts[1] == k:
+                    return done(j, max(open_[j], target), TARGET)
+                return done(j, close[j], TP_SIGNAL)
+            if complete:
+                return done(end, close[end], TIME)
+        price = float(close[-1])
+        return {"status": "open", "price": price, "stop": float(stop), "target": float(target), "trailing": False,
+                "return_pct": float(price / entry - 1), "r": float((price - entry) / risk), "days": n - 1 - i}
 
     for j in range(i + 1, end + 1):
         if low[j] <= stop:

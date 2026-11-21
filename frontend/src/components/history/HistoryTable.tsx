@@ -48,7 +48,7 @@ export const HistoryTable = memo(function HistoryTable({ payload, resetKey }: Pr
   const last = Math.min(n, first + PAGE_SIZE - 1);
 
   return (
-    <section className="card hist-card" id="hist">
+    <section className="card hist-card">
       <div className="card-title">
         <h2>Historical Data <small>{n && payload ? `${payload.symbol} · ${TF_LABEL[payload.timeframe]} · newest first` : ""}</small></h2>
         <div className="ct-right">

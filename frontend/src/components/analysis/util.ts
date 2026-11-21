@@ -35,7 +35,9 @@ export function rule(t: TargetResult, unit: string): string {
     ? `${s.horizon} trading sessions`
     : unit.endsWith("bars") ? `${s.horizon} × ${unit}` : `${s.horizon} ${unit}`;
   if (s.key === "short") {
-    if (s.bracket === "dynamic") return `Profit-take before stop-loss within ${window} - levels set per decision from the chart`;
+    if (s.bracket === "optimal") {
+      return `Profit-take +${s.target_atr}× / stop-loss −${s.stop_atr}× ${atrName} (optimized by backtested profit) within ${window}`;
+    }
     return `Profit-take +${s.target_atr}× ${atrName} before stop-loss −${s.stop_atr}× ${atrName} within ${window}`;
   }
   return s.direction === "up"

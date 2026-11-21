@@ -88,7 +88,9 @@ export function latestDecisions(r: AnalysisResult): Decision[] {
   });
 }
 
-export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMarker[] {
+/** viewStart = chart time where the chart's current view begins (bars payload); markers before it are not drawn.
+ *  Without it, the training's own range is used (signal.in_range). */
+export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility, viewStart?: number): EntryMarker[] {
   const out: EntryMarker[] = [];
   const decided = new Map(latestDecisions(r).map((d) => [d.key, d]));
   (Object.keys(r.targets) as TargetKey[]).forEach((key) => {
@@ -105,7 +107,7 @@ export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMar
           color: NO_DECISION_COLOR, text: up ? "BUY –" : "SELL –", size: 0.6 });
     }
     for (const s of t.signals) {
-      if (!s.in_range) continue;            // only the chart's own range (older ones are in the decision tables)
+      if (viewStart !== undefined ? s.time < viewStart : !s.in_range) continue; // only what is in view
       if (d && s.time === d.time) continue; // the current-K marker above replaces it
       out.push({
         time: s.time, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",

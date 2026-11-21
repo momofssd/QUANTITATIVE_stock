@@ -163,7 +163,24 @@ export type TargetKey = "short" | "tp_short";
 export type Outcome = "target" | "stop" | "expired" | "pending";
 export type ExitReason = "target" | "trailing stop" | "take-profit signal" | "time limit" | "stop";
 
-export type BracketMode = "fixed" | "dynamic";
+export type BracketMode = "fixed" | "optimal";
+
+/** Optimized ATR (bracket "optimal", quant/optimize.py). Returns are totals of $100-per-trade BUY trades, in %. */
+export interface Optimization {
+  tp_values: number[];
+  sl_values: number[];
+  default: { tp: number; sl: number };
+  lookback: number;       // bars of closed trades that score a combination
+  min_trades: number;
+  step: number;           // bars between re-optimizations (= retrains)
+  combos: number;
+  folds_per_combo: number;
+  grid: { tp: number; sl: number; trades: number; total_return_pct: number; avg_return_pct: number | null;
+    win_rate: number | null }[];
+  choices: { start: string; end: string; tp: number; sl: number; score_pct: number; trades: number; fallback: boolean }[];
+  current: { tp: number; sl: number; as_of: string; score_pct: number; trades: number; fallback: boolean };
+  strategy?: { trades: number; total_return_pct: number; avg_return_pct: number | null; win_rate: number | null };
+}
 
 /** Rows (bars) one model learned from. */
 export interface TrainSpan {
@@ -218,7 +235,7 @@ export interface Projection {
 /** One $100 lot of the simulation (every BUY buys one). */
 export interface SimTrade {
   status: "closed" | "open";
-  reason: "sell" | "target" | "stop" | "open";
+  reason: "sell" | "target" | "stop" | "time limit" | "open";
   setup: SetupName;  // setup of the BUY that bought the lot
   prob?: number | null; // the model's P on that BUY (backtests)
   qty: number;       // shares ($100 / price, or 1)
@@ -275,7 +292,11 @@ export interface BacktestResult {
   bar_unit: string;
   cooldown: number;
   window: { start: string; end: string; bars: number };
-  params: { n: number; setups: BacktestSetups; min_prob: number; sizing: SimSizing };
+  /** min_prob / sell_min_prob null = the model's own threshold (training base rate + 10 pts, per retrain). */
+  params: { n: number; setups: BacktestSetups; min_prob: number | null; sell_min_prob: number | null; sizing: SimSizing };
+  /** The model's own thresholds over the window ([lowest, highest]). */
+  model_thresholds: { buy: [number, number] | null; sell: [number, number] | null };
+  sell_decisions: number;   // SELL decisions in the window under the SELL threshold
   /** BUY-setup bars in the window and how many qualify at the threshold, per strategy. */
   pool: Record<BacktestSetups, { setup_bars: number; qualified: number; max_prob: number }>;
   result: BacktestScenario | null;
@@ -373,7 +394,7 @@ export interface EntrySignal {
   tp_atr: number;        // distance to the profit-take, x ATR
   sl_atr: number;        // distance to the stop-loss, x ATR
   target_basis: string;  // what set the profit-take ("1.5x risk", "50% retracement", "1.5 ATR", ...)
-  stop_basis: string;    // what set the stop-loss ("5-session low", "min 0.75 ATR", "1 ATR", ...)
+  stop_basis: string;    // what set the stop-loss ("1 ATR", "optimized")
   outcome: Outcome;
   resolved_date: string | null;
   days: number | null;
@@ -401,7 +422,7 @@ export interface CurrentSignal {
   tp_atr: number;        // distance to the profit-take, x ATR
   sl_atr: number;        // distance to the stop-loss, x ATR
   target_basis: string;  // what set the profit-take ("1.5x risk", "50% retracement", "1.5 ATR", ...)
-  stop_basis: string;    // what set the stop-loss ("5-session low", "min 0.75 ATR", "1 ATR", ...)
+  stop_basis: string;    // what set the stop-loss ("1 ATR", "optimized")
   chase_limit: number | null; // BUY: don't enter above this
   horizon_days: number;
 }
@@ -522,7 +543,7 @@ export interface AnalysisResult {
   params: {
     tp_atr: number; sl_atr: number; tp_range: [number, number]; sl_range: [number, number];
     bracket: BracketMode;
-    dynamic_rules: { stop: string; rebound: string; trend: string };
+    optimization: Optimization | null;   // bracket "optimal" only
   };
   /** $100 per BUY over the most recent decisions (null when there is no BUY). */
   simulation: Simulation | null;

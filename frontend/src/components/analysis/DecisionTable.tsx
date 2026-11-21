@@ -32,7 +32,7 @@ function LevelCell({ value, atr, basis, cls, sign }: { value: number; atr: numbe
   return (
     <td className={cls} title={basis}>
       {price(value)}
-      {/* fixed mode's basis ("1.5 ATR") repeats the distance; dynamic ones ("5-session low", "min 0.75 ATR") add to it */}
+      {/* fixed mode's basis ("1.5 ATR") repeats the distance; "optimized" says where the multiple came from */}
       <small className="lvl-basis">{sign}{atr?.toFixed(2)} ATR{basis && !/^[\d.]+ ATR$/.test(basis) ? ` · ${basis}` : ""}</small>
     </td>
   );
@@ -99,7 +99,7 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
         <span className="ta-dec-sub">
           most recent {Math.min(LIMIT, t.signals.length)} of {t.signals.length} · {inRange} inside the chart range
           (from {rangeStart}) · older rows are dimmed · click a row for what supported the decision
-          {isBuy && spec.bracket === "dynamic" && " · profit-take / stop-loss set per decision"}
+          {isBuy && spec.bracket === "optimal" && " · profit-take / stop-loss multiples chosen by backtested profit"}
         </span>
       </div>
       {rows.length === 0 ? (
@@ -114,7 +114,7 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
                 <th>{isBuy ? "Profit-take" : "Pullback to"}</th>
                 <th>{isBuy ? "Stop-loss" : "Invalid above"}</th>
                 <th className="l">{isBuy ? "Justified?" : "Outcome"}</th>
-                {isBuy && <th className="l">Trade exit (5 sessions)</th>}
+                {isBuy && <th className="l">Trade exit ({spec.horizon} sessions)</th>}
                 <th className="l">{sizing === "usd" ? "$100" : "1-share"} sim</th>
               </tr>
             </thead>

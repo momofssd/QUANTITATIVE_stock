@@ -72,8 +72,9 @@ export function TrainingDates({ r }: { r: AnalysisResult }) {
         </div>
       )}
       <p className="ta-train-disc">
-        <b>Disclaimer:</b> each model learns only from the latest {n(t.train_bars)} bars whose 5-session outcome was
-        already known before the bars it predicts. Every click of <b>Find entry points</b> retrains on the dates above;
+        <b>Disclaimer:</b> each model learns only from the latest {n(t.train_bars)} bars whose outcome (within the{" "}
+        {r.targets.short.spec.horizon}-session BUY / {r.targets.tp_short.spec.horizon}-session SELL window) was already
+        known before the bars it predicts. Every click of <b>Find entry points</b> retrains on the dates above;
         another day, range or interval uses different dates and can give different decisions. Past results do not
         guarantee future results. Research output, not investment advice.
       </p>

@@ -6,6 +6,7 @@
  * it reports back through callbacks (legend model, "need older bars").
  */
 import {
+  type AutoscaleInfo,
   createChart,
   CrosshairMode,
   type DeepPartial,
@@ -81,6 +82,24 @@ export class ChartEngine {
   private markers: EntryMarker[] = [];
   private lineDefs: PriceLineDef[] = [];
   private priceLines: IPriceLine[] = [];
+  /** Price-axis zoom of the price pane (1 = normal auto-scale; < 1 zoomed in, > 1 out), always centred. */
+  private yZoom = 1;
+  /** Start of the selected range (chart time) - what "fit" returns to. */
+  private viewStart: number | undefined;
+
+  /**
+   * Auto-scale of every series on the price pane's right scale. Unzoomed: the library's own range (candles and
+   * overlays). Zoomed: the visible candles' low-high range scaled by yZoom around its middle - the same range for
+   * every series, so the candles stay vertically centred.
+   */
+  private readonly autoscale = (original: () => AutoscaleInfo | null): AutoscaleInfo | null => {
+    if (this.yZoom === 1) return original();
+    const ext = this.visibleExtent();
+    if (!ext) return original();
+    const mid = (ext.min + ext.max) / 2;
+    const half = Math.max((ext.max - ext.min) / 2, Math.abs(mid) * 1e-4) * this.yZoom;
+    return { priceRange: { minValue: mid - half, maxValue: mid + half } };
+  };
 
   private priceSeries!: AnySeries;
   private readonly volSeries: AnySeries;
@@ -100,6 +119,7 @@ export class ChartEngine {
     // Created before the price series so the shading is drawn underneath the candles.
     this.bbFill = this.main.addCustomSeries(new BandFillSeries(), {
       fillColor: COLORS.bbFill, priceLineVisible: false, lastValueVisible: false, visible: false,
+      autoscaleInfoProvider: this.autoscale,
     }) as unknown as AnySeries;
     this.createPriceSeries();
     this.volSeries = this.main.addHistogramSeries({
@@ -112,6 +132,7 @@ export class ChartEngine {
       series: this.main.addLineSeries({
         color: o.color, lineWidth: o.width ?? 1, lineStyle: o.style ?? 0,
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: false,
+        autoscaleInfoProvider: this.autoscale,
       }),
     }));
 
@@ -135,7 +156,9 @@ export class ChartEngine {
   // ---------------------------------------------------------------- setup
   private createPriceSeries(): void {
     if (this.priceSeries) this.main.removeSeries(this.priceSeries);
-    const common = { priceLineVisible: true, priceLineWidth: 1 as const, priceLineStyle: 2 as const };
+    const common = {
+      priceLineVisible: true, priceLineWidth: 1 as const, priceLineStyle: 2 as const, autoscaleInfoProvider: this.autoscale,
+    };
     if (this.type === "line") {
       this.priceSeries = this.main.addLineSeries({ ...common, color: COLORS.line, lineWidth: 2 });
     } else if (this.type === "bars") {
@@ -179,9 +202,47 @@ export class ChartEngine {
     }));
   }
 
+  /** Candles centred in their own area: equal margins above and below (above the volume band when shown). */
   private applyPriceMargins(): void {
     const vol = this.enabled.has("volume");
-    this.priceSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: vol ? 0.24 : 0.06 } });
+    this.priceSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: vol ? 0.28 : 0.08 } });
+  }
+
+  /** Lowest low / highest high of the bars in view. */
+  private visibleExtent(): { min: number; max: number } | null {
+    const d = this.data;
+    const r = this.main.timeScale().getVisibleLogicalRange();
+    if (!d || !r || !d.time.length) return null;
+    const from = Math.max(0, Math.floor(r.from));
+    const to = Math.min(d.time.length - 1, Math.ceil(r.to));
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = from; i <= to; i++) {
+      if (d.low[i] < min) min = d.low[i];
+      if (d.high[i] > max) max = d.high[i];
+    }
+    return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+  }
+
+  // ---------------------------------------------------------------- view controls
+  /** Fit both axes: the selected range (its start -> the latest bar) with auto-scaled, centred prices on every
+   *  pane - undoes zooming, scrolling and price-axis drags. */
+  fitView(): void {
+    this.showFrom(this.viewStart);
+  }
+
+  /** Zoom both axes around the centre of the view: factor < 1 zooms in, > 1 zooms out. */
+  zoom(factor: number): void {
+    const ts = this.main.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (r) {
+      const c = (r.from + r.to) / 2;
+      const half = Math.max(5, ((r.to - r.from) / 2) * factor);
+      ts.setVisibleLogicalRange({ from: c - half, to: c + half });
+    }
+    const z = Math.min(5, Math.max(0.2, this.yZoom * factor));
+    this.yZoom = Math.abs(z - 1) < 1e-6 ? 1 : z;
+    this.main.priceScale("right").applyOptions({ autoScale: true });
   }
 
   private syncCharts(): void {
@@ -357,8 +418,12 @@ export class ChartEngine {
     return true;
   }
 
-  /** Initial view: from the range's start date to the latest bar (older history stays scrollable). */
+  /** Initial view: from the range's start date to the latest bar (older history stays scrollable), prices
+   *  auto-scaled and centred on every pane (a dragged price axis or zoom is reset). */
   private showFrom(viewStart?: number): void {
+    this.viewStart = viewStart;
+    this.yZoom = 1;
+    this.charts.forEach((c) => c.priceScale("right").applyOptions({ autoScale: true }));
     const t = this.data?.time;
     if (!t?.length) return;
     const i = viewStart == null ? 0 : t.findIndex((x) => x >= viewStart);

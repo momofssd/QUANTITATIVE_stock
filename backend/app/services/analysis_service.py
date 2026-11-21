@@ -5,13 +5,13 @@ Pipeline (per request = symbol + range + interval + short-term TP/SL):
      bars, and Yahoo factors (SPY, QQQ, VIX, oil, gasoline, T-bill rate)
   2. features: stock features on the interval's bars + daily market features aligned without look-ahead
      (quant.features). Labels (quant.targets):
-       short-term entry        profit-take +tp x daily ATR before stop-loss -sl x daily ATR within 5 trading SESSIONS
+       short-term entry        profit-take +tp x daily ATR before stop-loss -sl x daily ATR within 20 trading SESSIONS
        short-term take-profit  -1.5 daily ATR (pullback) before +1 daily ATR within 5 trading sessions
   3. walk-forward: across the evaluation window (the chart's range, at least MIN_EVAL_BARS bars) a model is
      re-trained every few bars on the preceding TRAIN_BARS bars whose outcome was already known, and predicts
      the next block  ->  out-of-sample probabilities; clicking "Find entry points" retrains everything
   4. signals = bars where P(success) >= threshold (base rate + 15 pts), thinned by a cooldown
-  5. short-term entries are traded as bracket orders (TP / SL / end of 5 sessions) (quant.trades), compared with
+  5. short-term entries are traded as bracket orders (TP / SL / end of 20 sessions) (quant.trades), compared with
      the same order placed on every bar
   6. stats + verdict, today's signal, factor relations (daily, 5y), which factor groups drive each model
 CPU work runs in a worker thread; results are cached per request for a few minutes.
@@ -38,6 +38,7 @@ from ..quant import brackets as qb
 from ..quant import explain as qe
 from ..quant import features as qf
 from ..quant import model as qm
+from ..quant import optimize as qo
 from ..quant import portfolio
 from ..quant import projection as qp
 from ..quant.intraday import intraday_check
@@ -62,7 +63,7 @@ CACHE_TTL = 600          # seconds
 CHASE_ATR = 0.25         # BUY entry stays valid up to entry + this x daily ATR (don't chase further)
 TP_RANGE = (0.5, 5.0)    # allowed short-term profit-take, in daily ATR
 SL_RANGE = (0.25, 5.0)   # allowed short-term stop-loss, in daily ATR
-BRACKETS = ("fixed", "dynamic")  # BUY profit-take / stop-loss: user's ATR multiples, or per decision (quant/brackets)
+BRACKETS = ("fixed", "optimal")  # BUY profit-take / stop-loss: user's ATR multiples, or optimized by backtest
 
 ALIGN_MODE = {"1Day": "same", "1Week": "week_end"}  # intraday -> "previous"
 BAR_WORD = {"1Day": "day", "1Week": "week"}  # intraday -> "bar"
@@ -87,7 +88,7 @@ class AnalysisRequest:
     extended: bool = False
     tp_atr: float = SHORT.target_atr   # short-term profit-take, x daily ATR
     sl_atr: float = SHORT.stop_atr     # short-term stop-loss, x daily ATR
-    bracket: str = "fixed"             # "fixed" (tp_atr / sl_atr) or "dynamic" (set per decision)
+    bracket: str = "fixed"             # "fixed" (tp_atr / sl_atr) or "optimal" (best profit, quant/optimize)
 
 
 async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
@@ -99,7 +100,7 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
         raise ApiError(400, f"Profit-take must be {TP_RANGE[0]}-{TP_RANGE[1]} ATR and stop-loss "
                             f"{SL_RANGE[0]}-{SL_RANGE[1]} ATR.")
     if req.bracket not in BRACKETS:
-        raise ApiError(400, "bracket must be 'fixed' or 'dynamic'.")
+        raise ApiError(400, "bracket must be 'fixed' or 'optimal'.")
     intraday = tf_min < 1440
     key = (req.symbol, rng, tf, req.start, req.end, req.extended and intraday, req.tp_atr, req.sl_atr, req.bracket)
     hit = _cache.get(key)
@@ -108,7 +109,9 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
 
     display_start, display_end = display_window(rng, req.start, req.end, now_et())
     if intraday:
-        need = TRAIN_BARS + WARMUP_BARS + MIN_EVAL_BARS
+        # + the BUY holding window: outcomes of the last HOLD_SESSIONS sessions are not known yet
+        per_session = (960 if req.extended else 390) / tf_min
+        need = TRAIN_BARS + WARMUP_BARS + MIN_EVAL_BARS + int(SHORT.horizon * per_session)
         fetch_start = max(display_start - pd.Timedelta(days=warmup_days(tf_min, need, req.extended)), EARLIEST)
     else:
         fetch_start = EARLIEST
@@ -140,7 +143,8 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
     return result
 
 
-def run_backtest(run_id: str, n: int, setups: str, min_prob: float, sizing: str) -> dict:
+def run_backtest(run_id: str, n: int, setups: str, min_prob: float | None, sizing: str,
+                 sell_min_prob: float | None = None) -> dict:
     """Backtest scenarios on a training run (quant/backtest.py)."""
     run = _runs.get(run_id)
     if run is None:
@@ -150,14 +154,15 @@ def run_backtest(run_id: str, n: int, setups: str, min_prob: float, sizing: str)
         raise ApiError(422, f"Number of decisions must be 1-{qbt.MAX_DECISIONS}.")
     if setups not in qbt.SETUP_CHOICES:
         raise ApiError(422, "setups must be rebound, trend or both.")
-    if not 0.0 <= min_prob <= 1.0:
-        raise ApiError(422, "The probability threshold must be between 0 and 100%.")
+    for v in (min_prob, sell_min_prob):
+        if v is not None and not 0.0 <= v <= 1.0:
+            raise ApiError(422, "A probability threshold must be between 0 and 100%.")
     if sizing not in portfolio.SIZINGS:
         raise ApiError(422, "sizing must be usd or share.")
     _runs.move_to_end(run_id)
     return {"run_id": run_id, "symbol": run["symbol"], "timeframe": run["timeframe"], "range": run["range"],
             "bar_unit": run["bar_unit"], "cooldown": run["cooldown"], "window": run["window"],
-            **qbt.backtest(run, n=n, setups=setups, min_prob=min_prob, sizing=sizing)}
+            **qbt.backtest(run, n=n, setups=setups, min_prob=min_prob, sell_min_prob=sell_min_prob, sizing=sizing)}
 
 
 async def intraday_snapshot(symbol: str) -> dict:
@@ -259,18 +264,26 @@ def _train_span(label, resolved, cutoff: int, stamps, session_ord: np.ndarray, d
             "days": int((days[idx[-1]] - days[idx[0]]) / np.timedelta64(1, "D"))}
 
 
-def _training(fitted: dict, stamps, session_ord: np.ndarray, days: np.ndarray, n: int, w0: int, step: int) -> dict:
+def _training(fitted: dict, stamps, session_ord: np.ndarray, days: np.ndarray, n: int, steps: dict,
+              latest_for: dict) -> dict:
     """Actual training dates per target: the first walk-forward model and today's model."""
     out = {}
     for key, (_, _, label, resolved, _, wf, _) in fitted.items():
         first = wf.models[0][0] if wf.models else None
         span = _train_span(label, resolved, first, stamps, session_ord, days) if first is not None else None
+        lab_now, res_now, _ = latest_for.get(key, (label, resolved, None))
         out[key] = {
-            "folds": wf.folds, "retrain_every": step,
+            "folds": wf.folds, "retrain_every": steps[key],
             "first": {**span, "predicts_from": stamps[first]} if span else None,
-            "current": _train_span(label, resolved, n, stamps, session_ord, days),
+            "current": _train_span(lab_now, res_now, n, stamps, session_ord, days),
         }
     return out
+
+
+def _sell_signal(f: tuple, setup: np.ndarray) -> np.ndarray:
+    """Out-of-sample signal per bar of a fitted target (model AND setup)."""
+    wf = f[5]
+    return (np.nan_to_num(wf.prob, nan=-1.0) >= np.nan_to_num(wf.threshold, nan=2.0)) & (setup != "")
 
 
 def _range_stats(label, signals, r0: int, w1: int, setup: np.ndarray) -> dict:
@@ -332,8 +345,8 @@ def _horizons(spec: TargetSpec, tf: str, session: pd.Series, et_naive: pd.Dateti
     if tf == "1Day":
         end, complete = bar_horizon(n, spec.horizon)
         return Horizons(end, complete, spec.cooldown, "sessions", np.arange(n))
-    if tf == "1Week":  # 5 sessions = the next weekly bar
-        end, complete = bar_horizon(n, 1)
+    if tf == "1Week":  # 5 sessions = one weekly bar (20 sessions = 4)
+        end, complete = bar_horizon(n, max(1, round(spec.horizon / 5)))
         return Horizons(end, complete, 1, "bars", np.arange(n))
     minute = (et_naive.hour * 60 + et_naive.minute).to_numpy()
     end, complete = session_horizon(ordinal, minute, spec.horizon)
@@ -367,23 +380,39 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
     specs = [dataclasses.replace(s, target_atr=tp_atr, stop_atr=sl_atr, bracket=bracket) if s.key == "short" else s
              for s in TARGETS]
 
-    # 1) labels + walk-forward probabilities for every target (entries and take-profits)
-    fitted = {}
-    for spec in specs:
+    # 1) labels + walk-forward probabilities for every target (entries and take-profits). An optimized BUY bracket
+    #    is fitted last: its trades need the SELL signals.
+    fitted: dict[str, tuple] = {}
+    steps: dict[str, int] = {}
+    latest_for: dict[str, tuple] = {}   # labels / levels today's model uses when they differ from the composite
+    optimization = None
+    for spec in sorted(specs, key=lambda sp: sp.bracket == "optimal"):
         a = day_atr if spec.atr_basis == "daily" else bar_atr
         hz = _horizons(spec, tf, session, et_naive)
-        if spec.bracket == "dynamic":
-            lv = qb.dynamic_levels(close, high, low, a, hz.session_ord if intraday else np.arange(n),
-                                   setup_of[spec.key], bars_per_session=0.2 if tf == "1Week" else 1.0)
-        else:
-            lv = qb.fixed_levels(close, a, spec.target_atr, spec.stop_atr, spec.sign)
+        if spec.bracket == "optimal":
+            # quant/optimize.py: one walk-forward retrain per profit-take x stop-loss combination; each block uses
+            # the combination with the best profit over the trades closed before it.
+            tps = _sell_signal(fitted[spec.exit_with], setup_of[spec.exit_with])
+            opt = qo.optimize(X, open_, high, low, close, a, spec, hz, setup_of[spec.key], tps, w0=w0,
+                              window=TRAIN_BARS, min_step=MIN_RETRAIN_EVERY, stamps=stamps)
+            fitted[spec.key] = (a, hz, opt["label"], opt["resolved"], opt["outcome"], opt["wf"], opt["lv"])
+            cur = opt["current"]
+            latest_for[spec.key] = (cur.label, cur.resolved, cur.lv)
+            steps[spec.key] = opt["step"]
+            optimization = opt["info"]
+            continue
+        lv = qb.fixed_levels(close, a, spec.target_atr, spec.stop_atr, spec.sign)
         label, resolved, outcome = triple_barrier(high, low, close, a, spec, hz.end, hz.complete,
                                                   levels=(lv.target, lv.stop))
         wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model, keep=True)
         fitted[spec.key] = (a, hz, label, resolved, outcome, wf, lv)
+        steps[spec.key] = step
+    if optimization:  # the BUY spec shows the combination in use now
+        specs = [dataclasses.replace(sp, target_atr=optimization["current"]["tp"],
+                                     stop_atr=optimization["current"]["sl"]) if sp.bracket == "optimal" else sp
+                 for sp in specs]
     # Out-of-sample SELL signal per bar (model AND interim-top setup); closes BUY trades that are in profit.
-    tp_signal = {k: (np.nan_to_num(f[5].prob, nan=-1.0) >= np.nan_to_num(f[5].threshold, nan=2.0))
-                 & (setup_of[k] != "") for k, f in fitted.items()}
+    tp_signal = {k: _sell_signal(f, setup_of[k]) for k, f in fitted.items()}
 
     targets = {}
     now_models: dict[str, qp.Side] = {}
@@ -413,8 +442,10 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                              lv.at(i))
                 sgl["trade"] = _trade_view(t, stamps, times, left(i), hz.unit)
                 sims.append(t)
-                # For the $100 simulation: the first profit-take / stop-loss hit, with no time limit.
-                h = simulate(i, open_, high, low, close, a[i], spec, None, n - 1, False, lv.at(i))
+                # For the $100 simulation: the first profit-take / stop-loss hit, or the close at the end of the
+                # holding window (time limit); None while still open.
+                h = simulate(i, open_, high, low, close, a[i], spec, None, int(hz.end[i]), bool(hz.complete[i]),
+                             lv.at(i))
                 sgl["_exit"] = ({"i": h["exit_index"], "time": int(times[h["exit_index"]]),
                                  "date": stamps[h["exit_index"]], "price": h["price"], "reason": h["reason"]}
                                 if h["status"] == "closed" else None)
@@ -435,8 +466,18 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                           "horizon": spec.horizon, "horizon_mode": spec.horizon_mode, "atr_basis": spec.atr_basis,
                           "exit_with": spec.exit_with, "bracket": spec.bracket},
             }
+            if spec.bracket == "optimal" and optimization is not None:
+                # the walk-forward optimized strategy itself, over the same window as the grid
+                rets = [t["return_pct"] * 100 for t in sims if t["status"] == "closed"]
+                optimization["strategy"] = {
+                    "trades": len(rets), "total_return_pct": round(sum(rets), 2),
+                    "avg_return_pct": round(sum(rets) / len(rets), 2) if rets else None,
+                    "win_rate": round(sum(r > 0 for r in rets) / len(rets), 3) if rets else None,
+                }
 
-        latest, base_now = qm.fit_latest(X, label, resolved, TRAIN_BARS, kind=spec.model)
+        # today's model: the composite's labels, or (optimized) the labels of the combination in use now
+        lab_now, res_now, lv_now = latest_for.get(spec.key, (label, resolved, lv))
+        latest, base_now = qm.fit_latest(X, lab_now, res_now, TRAIN_BARS, kind=spec.model)
         current = None
         now_models[spec.key] = qp.Side(None, float("nan"))
         if latest is not None and np.isfinite(a[-1]):
@@ -452,7 +493,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                 "setup": setup_now,                    # "rebound" / "trend" / "top" / ""
                 "signal": bool(ml and setup_now),      # BUY / SELL = model AND setup
                 "entry": _num(close[-1], 2), "atr": _num(a[-1], 2),
-                **_level_view(lv, n - 1, close, a),
+                **_level_view(lv_now, n - 1, close, a),
                 "chase_limit": _num(close[-1] + CHASE_ATR * a[-1], 2) if spec.kind == "entry" else None,
                 "horizon_days": spec.horizon,
             }
@@ -465,7 +506,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             "range_stats": _range_stats(label, signals, r0, w1, setup_of[spec.key]),
             "trades": trades,
             "open_trade": open_trade,
-            "importance": qm.group_importance(X, label, resolved, TRAIN_BARS, min(IMPORTANCE_BARS, w1 - w0),
+            "importance": qm.group_importance(X, lab_now, res_now, TRAIN_BARS, min(IMPORTANCE_BARS, w1 - w0),
                                               names, qf.GROUPS, kind=spec.model),
         }
 
@@ -477,8 +518,9 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
     simulation = portfolio.simulate_decisions(
         [event(s) for s in targets["short"]["signals"]], [event(s) for s in targets["tp_short"]["signals"]],
         {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])})
-    # Backtests page: every BUY-setup bar of the model-check window with its out-of-sample P and first
-    # profit-take / stop-loss hit, the SELL decisions, the last bar and where the current year starts.
+    # Backtests page: every BUY-setup bar of the model-check window with its out-of-sample P, the model's own
+    # threshold there and the first profit-take / stop-loss / time-limit exit; every interim-top bar with the SELL
+    # model's P and threshold; the last bar and where the current year starts.
     a_b, hz_b, wf_b, lv_b = fitted["short"][0], fitted["short"][1], fitted["short"][5], fitted["short"][6]
     spec_b = next(sp for sp in specs if sp.key == "short")
     candidates = []
@@ -486,18 +528,26 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         p_i = wf_b.prob[i]
         if not buy_names[i] or not np.isfinite(p_i) or not np.isfinite(a_b[i]) or a_b[i] <= 0:
             continue
-        h = simulate(i, open_, high, low, close, a_b[i], spec_b, None, n - 1, False, lv_b.at(i))
+        h = simulate(i, open_, high, low, close, a_b[i], spec_b, None, int(hz_b.end[i]), bool(hz_b.complete[i]),
+                     lv_b.at(i))
         candidates.append({
             "i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i]), "setup": str(buy_names[i]),
-            "prob": float(p_i),
+            "prob": float(p_i), "threshold": float(wf_b.threshold[i]),
             "exit": ({"i": h["exit_index"], "time": int(times[h["exit_index"]]), "date": stamps[h["exit_index"]],
                       "price": h["price"], "reason": h["reason"]} if h["status"] == "closed" else None),
         })
+    wf_s, hz_s = fitted["tp_short"][5], fitted["tp_short"][1]
+    sell_candidates = [
+        {"i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i]),
+         "prob": float(wf_s.prob[i]), "threshold": float(wf_s.threshold[i])}
+        for i in range(w0, w1)
+        if setup_of["tp_short"][i] and np.isfinite(wf_s.prob[i]) and np.isfinite(wf_s.threshold[i])
+    ]
     year = int(et_naive[-1].year)
     ys = int(np.argmax(et_naive.year == year))
     backtest_run = {
         "candidates": candidates, "cooldown": int(hz_b.cooldown),
-        "sells": [event(s) for s in targets["tp_short"]["signals"]],
+        "sell_candidates": sell_candidates, "sell_cooldown": int(hz_s.cooldown),
         "last": {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])},
         "year_start": {"i": ys, "date": f"{year}-01-01", "prev_close": float(close[ys - 1]) if ys > 0 else None},
         "bar_unit": BAR_UNIT[tf], "window": {"start": stamps[w0], "end": stamps[w1 - 1], "bars": w1 - w0},
@@ -508,20 +558,20 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             sgl.pop("_exit", None)
 
     # Projected BUY entry / SELL price: at which close would the current K line become a BUY or a SELL?
-    a_buy, hz_buy = fitted["short"][0], fitted["short"][1]
+    a_buy = fitted["short"][0]
     tp_spec = next(sp for sp in specs if sp.key == "tp_short")
     a_sell = fitted["tp_short"][0]
 
     def buy_levels(b: pd.DataFrame, setup: str) -> dict:
         m = len(b)
-        c_, h_, l_ = (b[k].to_numpy(dtype=float) for k in ("close", "high", "low"))
+        c_ = b["close"].to_numpy(dtype=float)
         a_t = a_buy[-m:]
-        if bracket == "dynamic":
-            ordn = (hz_buy.session_ord if intraday else np.arange(n))[-m:]
-            names_t = np.array([""] * (m - 1) + [setup], dtype=object)
-            lvx = qb.dynamic_levels(c_, h_, l_, a_t, ordn, names_t, bars_per_session=0.2 if tf == "1Week" else 1.0)
-        else:
-            lvx = qb.fixed_levels(c_, a_t, tp_atr, sl_atr)
+        tp_use, sl_use = ((optimization["current"]["tp"], optimization["current"]["sl"]) if optimization
+                          else (tp_atr, sl_atr))
+        lvx = qb.fixed_levels(c_, a_t, tp_use, sl_use)
+        if optimization:
+            lvx.target_basis[:] = qo.BASIS
+            lvx.stop_basis[:] = qo.BASIS
         return _level_view(lvx, m - 1, c_, a_t)
 
     def sell_levels(price: float) -> dict:
@@ -544,7 +594,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         "daily": {"start": daily.index[0].strftime("%Y-%m-%d"), "end": daily.index[-1].strftime("%Y-%m-%d"),
                   "bars": len(daily)},
         "factors": {"start": factors.index[0].strftime("%Y-%m-%d"), "end": factors.index[-1].strftime("%Y-%m-%d")},
-        "targets": _training(fitted, stamps, session_ord, bar_dates.to_numpy(), n, w0, step),
+        "targets": _training(fitted, stamps, session_ord, bar_dates.to_numpy(), n, steps, latest_for),
     }
     return {
         "_backtest": backtest_run,   # kept on the server for the Backtests page (run_analysis stores it)
@@ -556,7 +606,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         "bar_unit": BAR_UNIT[tf],
         "asof": stamps[-1],
         "params": {"tp_atr": tp_atr, "sl_atr": sl_atr, "tp_range": TP_RANGE, "sl_range": SL_RANGE,
-                   "bracket": bracket, "dynamic_rules": qb.RULES},
+                   "bracket": bracket, "optimization": optimization},
         "simulation": simulation,
         "projection": proj,
         "range_window": {"start": stamps[r0], "end": stamps[w1 - 1], "bars": w1 - r0, "start_time": int(times[r0])},

@@ -59,7 +59,7 @@ export interface AnalysisQuery {
   extended?: boolean;
   tp_atr?: number;   // short-term profit-take, x daily ATR
   sl_atr?: number;   // short-term stop-loss, x daily ATR
-  bracket?: "fixed" | "dynamic"; // BUY levels: fixed multiples or set per decision
+  bracket?: "fixed" | "optimal"; // BUY levels: fixed multiples or optimized by backtested profit
   refresh?: boolean;
 }
 
@@ -74,7 +74,8 @@ export const api = {
   analysis: (symbol: string, query: AnalysisQuery, signal?: AbortSignal) =>
     get<AnalysisResult>(`/api/analysis/${encodeURIComponent(symbol)}`, { ...query }, signal),
   /** Backtest scenarios on a training run (run_id from the analysis). */
-  backtest: (runId: string, q: { n: number; setups: BacktestSetups; min_prob: number; sizing: SimSizing },
+  backtest: (runId: string, q: { n: number; setups: BacktestSetups; min_prob?: number; sell_min_prob?: number;
+    sizing: SimSizing },
     signal?: AbortSignal) =>
     get<BacktestResult>(`/api/backtest/${encodeURIComponent(runId)}`, { ...q }, signal),
   /** Today's 5-minute check for the current K line (cheap). */

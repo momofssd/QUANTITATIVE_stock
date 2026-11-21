@@ -65,19 +65,20 @@ export default function App() {
     }, bracket);
   }, [runAnalysis, bracket, symbol, range, timeframe, extended, from, to]);
   const ar = analysis.result && analysis.result.symbol === symbol ? analysis.result : null;
-  // Markers belong to the bars they were computed on: only draw them on the same interval.
-  // The result belongs to the chart only for the same range, interval, extended-hours setting (and custom dates).
+  // Markers belong to the bars they were computed on: same symbol, interval and extended-hours setting.
+  // The range is only the view - switching it keeps the markers (drawn for what is in view) and price lines.
   const q = analysis.query;
-  const resultMatchesChart = !!ar && !!q && q.range === range && ar.timeframe === timeframe
-    && (!ar.intraday || ar.extended === extended)
-    && (range !== "CUSTOM" || (q.start === from && (q.end ?? "") === (to ?? "")));
+  const sameBars = !!ar && ar.timeframe === timeframe && (!ar.intraday || ar.extended === extended);
+  const sameRange = !!q && q.range === range && (range !== "CUSTOM" || (q.start === from && (q.end ?? "") === (to ?? "")));
+  const mismatch = !ar ? null : !sameBars ? "bars" as const : !sameRange ? "range" as const : null;
+  const viewStart = barsApi.bars?.payload.view_start;
   const markers = useMemo(
-    () => (ar && resultMatchesChart ? buildMarkers(ar, analysis.visible) : NO_MARKERS),
-    [ar, resultMatchesChart, analysis.visible],
+    () => (ar && sameBars ? buildMarkers(ar, analysis.visible, viewStart) : NO_MARKERS),
+    [ar, sameBars, analysis.visible, viewStart],
   );
   const priceLines = useMemo(
-    () => (ar && resultMatchesChart ? buildPriceLines(ar, analysis.visible) : NO_LINES),
-    [ar, resultMatchesChart, analysis.visible],
+    () => (ar && sameBars ? buildPriceLines(ar, analysis.visible) : NO_LINES),
+    [ar, sameBars, analysis.visible],
   );
 
   const chartRef = useRef<PriceChartHandle>(null);
@@ -140,7 +141,7 @@ export default function App() {
         )}
 
         {page === "backtests" && (
-          <BacktestPage a={analysis} chart={{ symbol, range, timeframe }} stale={!!ar && !resultMatchesChart}
+          <BacktestPage a={analysis} chart={{ symbol, range, timeframe }} stale={mismatch !== null}
             onTrain={onAnalyze} onError={banner.showApiError} />
         )}
         {/* The chart page stays mounted (live stream, chart state, training) while Backtests is shown. */}
@@ -165,7 +166,7 @@ export default function App() {
         </div>
 
         <AnalysisPanel
-          a={analysis} stale={!!ar && !resultMatchesChart} onRetrain={onAnalyze}
+          a={analysis} mismatch={mismatch} chartRange={range} onRetrain={onAnalyze}
           livePrice={quote.quote?.price ?? null}
         />
         <HistoryTable payload={bars?.payload ?? null} version={tickVersion} resetKey={fitKey} />

@@ -9,14 +9,14 @@ import { useEffect, useState } from "react";
 import { EXIT_LABEL, MARK, SETUP_LABEL } from "../../chart/markers";
 import type { Bracket } from "../../hooks/useAnalysis";
 import { price } from "../../lib/format";
-import type { AnalysisResult, ExitReason, RangeStats, TargetResult, TradeSummary } from "../../types/api";
+import type { AnalysisResult, ExitReason, Optimization, RangeStats, TargetResult, TradeSummary } from "../../types/api";
+import { OptimizationPanel } from "./OptimizationPanel";
 import { dirCls, left, pct, rule, signedPct } from "./util";
 
 export interface BracketEditor {
   value: Bracket;               // what the next retrain will use
   used: Bracket;                // what this result was trained with
   ranges: { tp: [number, number]; sl: [number, number] };
-  rules: AnalysisResult["params"]["dynamic_rules"];
   onChange: (b: Bracket) => void;
   onRetrain: () => void;
   busy: boolean;
@@ -30,6 +30,7 @@ interface Props {
   showMarkers: boolean;
   onToggle: (on: boolean) => void;
   bracket?: BracketEditor;      // BUY only
+  optimization?: Optimization | null;   // BUY with "Optimized ATR"
 }
 
 function BracketForm({ b }: { b: BracketEditor }) {
@@ -56,8 +57,8 @@ function BracketForm({ b }: { b: BracketEditor }) {
       <div className="seg seg-sm" role="group" aria-label="Profit-take and stop-loss">
         <button className={mode === "fixed" ? "on" : ""} onClick={() => b.onChange({ ...b.value, mode: "fixed" })}
           title="The same multiples of the daily ATR for every decision">Fixed ATR</button>
-        <button className={mode === "dynamic" ? "on" : ""} onClick={() => b.onChange({ ...b.value, mode: "dynamic" })}
-          title="Set per decision from the chart: swing low, retracement, reward:risk">Dynamic</button>
+        <button className={mode === "optimal" ? "on" : ""} onClick={() => b.onChange({ ...b.value, mode: "optimal" })}
+          title="Backtest every profit-take x stop-loss combination and use the one with the best profit">Optimized ATR</button>
       </div>
       {mode === "fixed" ? (
         <>
@@ -75,8 +76,9 @@ function BracketForm({ b }: { b: BracketEditor }) {
         </>
       ) : (
         <span className="ta-bracket-info ta-bracket-dyn">
-          Per decision · <b>stop-loss</b> {b.rules.stop} · <b>profit-take</b> rebound: {b.rules.rebound}; trend:{" "}
-          {b.rules.trend}
+          Backtests 12 combinations (profit-take 1–3 × ATR, stop-loss 0.75–1.5 × ATR), retraining the BUY model for each,
+          and uses the one with the <b>best total return</b> over the trades closed in the previous year of bars -
+          re-chosen about every quarter, from past trades only. Takes about a minute.
         </span>
       )}
       <button className="btn btn-primary" disabled={!changed || b.busy} onClick={b.onRetrain}
@@ -117,11 +119,11 @@ function ExitRule({ t, unit }: { t: TargetResult; unit: string }) {
   const r = t.trades?.rules;
   if (!r) return null;
   const window = r.horizon_mode === "sessions" ? `${r.horizon} trading sessions` : `${r.horizon} ${unit}`;
-  const dyn = r.bracket === "dynamic";
+  const opt = r.bracket === "optimal";
   return (
     <div className="ta-exit-rule">
-      Each BUY is sold at the first of: profit-take ({dyn ? "its own level" : `+${r.target_atr}× ATR`}) · stop-loss
-      ({dyn ? "its own level" : `−${r.stop_atr}× ATR`})
+      Each BUY is sold at the first of: profit-take ({opt ? "the optimized multiple in use at that time" : `+${r.target_atr}× ATR`})
+      · stop-loss ({opt ? "same" : `−${r.stop_atr}× ATR`})
       {r.trail_after_atr > 0 && <> · trailing stop {r.trail_atr} ATR below the highest close once up {r.trail_after_atr} ATR</>}
       {r.exit_with && <> · a SELL signal while the trade is in profit</>} · the close after {window}.
     </div>
@@ -159,10 +161,13 @@ function RangeBlock({ t, rs, rw, isBuy }: { t: TargetResult; rs: RangeStats; rw:
         {rs.signals === 0
           ? <>No {isBuy ? "BUY" : "SELL"} decision inside this range (a decision needs the setup <b>and</b> the model;
               at most one per cooldown).</>
-          : <>{isBuy ? "Justified" : "Hit rate"} = {what} within 5 trading sessions: {rs.hits} of {rs.resolved} decided
+          : <>{isBuy ? "Justified" : "Hit rate"} = {what} within {t.spec.horizon} trading sessions: {rs.hits} of {rs.resolved} decided
               {pending > 0 && <> · {pending} still open (needs 5 more sessions)</>}.</>}
         {" "}Setup only / Any bar: {rs.setup_bars.toLocaleString()} setup bars / {rs.decided_bars.toLocaleString()} bars
-        with a known outcome{rs.decided_bars < rs.bars && <> (the last 5 sessions are not decided yet)</>}.
+        with a known outcome{rs.decided_bars < rs.bars && (
+          <> ({rs.bars - rs.decided_bars} recent bar{rs.bars - rs.decided_bars === 1 ? "" : "s"} still open: neither level
+            hit and the {t.spec.horizon}-session window not over yet)</>
+        )}.
       </p>
       {isBuy && tb && (
         <>
@@ -226,7 +231,7 @@ function ModelBlock({ t, w, isBuy, same }: { t: TargetResult; w: Props["window"]
   );
 }
 
-export function TargetCard({ t, barUnit, rangeWindow, window, showMarkers, onToggle, bracket }: Props) {
+export function TargetCard({ t, barUnit, rangeWindow, window, showMarkers, onToggle, bracket, optimization }: Props) {
   const { spec } = t;
   const isBuy = spec.kind === "entry";
   const ot = t.open_trade?.trade;
@@ -240,6 +245,7 @@ export function TargetCard({ t, barUnit, rangeWindow, window, showMarkers, onTog
 
       {bracket && <BracketForm b={bracket} />}
       {isBuy && <ExitRule t={t} unit={barUnit} />}
+      {isBuy && optimization && <OptimizationPanel o={optimization} barUnit={barUnit} hold={t.spec.horizon} />}
 
       {isBuy && ot?.status === "open" && t.open_trade && (
         <div className="ta-open">

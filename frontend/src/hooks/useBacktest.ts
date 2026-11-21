@@ -12,21 +12,28 @@ export type SellRule = "sell_only" | "with_bracket";
 export interface BacktestSettings {
   n: number;              // most recent BUY decisions (1-100)
   setups: BacktestSetups; // rebound / trend / both
-  minProb: number;        // buy when P >= this, in % (0-100)
+  minProb: number | null;     // BUY when P >= this, in % (0-100); null = the model's own threshold (default)
+  sellMinProb: number | null; // SELL when P >= this, in %; null = the model's own threshold (default)
   sizing: SimSizing;      // $100 or 1 share per BUY
   sell: SellRule;         // sell rule shown
 }
 
-export const DEFAULT_BACKTEST: BacktestSettings = { n: 30, setups: "both", minProb: 60, sizing: "usd", sell: "sell_only" };
+export const DEFAULT_BACKTEST: BacktestSettings = {
+  n: 30, setups: "both", minProb: null, sellMinProb: null, sizing: "usd", sell: "sell_only",
+};
 export const N_RANGE: [number, number] = [1, 100];
 const DEBOUNCE_MS = 250;
 
 export const validN = (n: number) => Number.isInteger(n) && n >= N_RANGE[0] && n <= N_RANGE[1];
-export const validProb = (p: number) => Number.isFinite(p) && p >= 0 && p <= 100;
+export const validProb = (p: number | null) => p === null || (Number.isFinite(p) && p >= 0 && p <= 100);
 
 export function useBacktest(runId: string | null, onError: (e: ApiError) => void) {
   const [settings, setSettingsState] = useState<BacktestSettings>(
-    () => ({ ...DEFAULT_BACKTEST, ...load<Partial<BacktestSettings>>("backtest", {}) }));
+    () => {
+      const s = { ...DEFAULT_BACKTEST, ...load<Partial<BacktestSettings>>("backtest", {}) };
+      // 60% was the old fixed default, not a user choice: use the model's threshold instead
+      return s.minProb === 60 ? { ...s, minProb: null } : s;
+    });
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,13 +47,13 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
     });
   }, []);
 
-  const { n, setups, minProb, sizing } = settings;
+  const { n, setups, minProb, sellMinProb, sizing } = settings;
   useEffect(() => {
     if (!runId) {
       setResult(null);
       return;
     }
-    if (!validN(n) || !validProb(minProb)) return;
+    if (!validN(n) || !validProb(minProb) || !validProb(sellMinProb)) return;
     const id = window.setTimeout(async () => {
       ctrl.current?.abort();
       const c = new AbortController();
@@ -54,7 +61,11 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
       setLoading(true);
       setError(null);
       try {
-        setResult(await api.backtest(runId, { n, setups, min_prob: minProb / 100, sizing }, c.signal));
+        setResult(await api.backtest(runId, {
+          n, setups, sizing,
+          min_prob: minProb === null ? undefined : minProb / 100,
+          sell_min_prob: sellMinProb === null ? undefined : sellMinProb / 100,
+        }, c.signal));
       } catch (e) {
         if (isAbort(e)) return;
         const err = e as ApiError;
@@ -66,7 +77,7 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
       }
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [runId, n, setups, minProb, sizing, onError]);
+  }, [runId, n, setups, minProb, sellMinProb, sizing, onError]);
 
   return { settings, setSettings, result, loading, error };
 }

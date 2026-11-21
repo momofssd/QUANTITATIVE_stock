@@ -1,56 +1,11 @@
 import numpy as np
-import pandas as pd
 import pytest
 
 from backend.app.quant import brackets as qb
 from backend.app.quant import portfolio
 
 
-# ---------------------------------------------------------------- dynamic profit-take / stop-loss
-def test_session_extreme_daily_and_intraday():
-    low = np.array([10, 9, 11, 12, 13, 14, 15.0])
-    assert qb.session_extreme(low, np.arange(7), 3, "min").tolist() == [10, 9, 9, 9, 11, 12, 13]
-    # intraday: 3 sessions of 2 bars; today so far + the previous session
-    lo = np.array([5, 4, 6, 3, 7, 8.0])
-    ordn = np.array([0, 0, 1, 1, 2, 2])
-    assert qb.session_extreme(lo, ordn, 2, "min").tolist() == [5, 4, 4, 3, 3, 3]
-    # never uses a later bar of the same session (no look-ahead)
-    assert qb.session_extreme(lo[:5], ordn[:5], 2, "min").tolist() == [5, 4, 4, 3, 3]
-
-
-def test_dynamic_levels_follow_the_chart():
-    n = 30
-    close = np.full(n, 100.0)
-    high, low = close + 1, close - 1
-    low[-3] = 97.0                      # swing low 3 bars ago
-    high[-8] = 112.0                    # prior high 8 bars ago: the fall 112 -> 97
-    a = np.full(n, 2.0)
-    setup = np.array([""] * n, dtype=object)
-    setup[-1] = "rebound"
-    lv = qb.dynamic_levels(close, high, low, a, np.arange(n), setup)
-    # stop: 5-session low 97 - 0.2 ATR = 96.6 -> risk 3.4 (1.7 ATR, inside 0.5-2.5)
-    assert np.isclose(lv.stop[-1], 96.6) and lv.stop_basis[-1] == "5-session low"
-    # rebound target: 50% retracement 97 + 7.5 = 104.5 (room 4.5 >= 1x risk, <= 3 ATR)
-    assert np.isclose(lv.target[-1], 104.5) and lv.target_basis[-1] == "50% retracement"
-    # a trend / no-setup bar: 1.5x risk
-    risk = close[-2] - lv.stop[-2]
-    assert np.isclose(lv.target[-2] - close[-2], 1.5 * risk) and lv.target_basis[-2] == "1.5x risk"
-
-
-def test_dynamic_levels_are_clamped():
-    n = 12
-    close = np.full(n, 100.0)
-    high, low = close + 0.01, close - 0.01      # almost no range: stop would be tiny
-    a = np.full(n, 2.0)
-    lv = qb.dynamic_levels(close, high, low, a, np.arange(n), np.array([""] * n, dtype=object))
-    assert np.isclose(close[-1] - lv.stop[-1], 0.75 * 2.0) and lv.stop_basis[-1] == "min 0.75 ATR"
-    low[-2] = 80.0                               # far-away low: stop capped at 2.5 ATR
-    lv = qb.dynamic_levels(close, high, low, a, np.arange(n), np.array([""] * n, dtype=object))
-    assert np.isclose(close[-1] - lv.stop[-1], 2.5 * 2.0) and lv.stop_basis[-1] == "max 2.5 ATR"
-    assert np.isclose(lv.target[-1] - close[-1], 3.5 * 2.0)   # 1.5 x 5 = 7.5 > cap 3.5 ATR = 7
-    assert lv.target_basis[-1] == "cap 3.5 ATR"
-
-
+# ---------------------------------------------------------------- profit-take / stop-loss levels
 def test_fixed_levels():
     lv = qb.fixed_levels(np.array([100.0]), np.array([2.0]), 1.5, 1.0)
     assert lv.at(0) == (103.0, 98.0)

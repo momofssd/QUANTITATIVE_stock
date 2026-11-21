@@ -35,14 +35,48 @@ interface Props {
 
 /* ------------------------------------------------------------------ settings */
 
-function Controls({ bt }: { bt: ReturnType<typeof useBacktest> }) {
+const pctRange = (r: [number, number] | null | undefined) =>
+  !r ? "" : Math.round(r[0] * 100) === Math.round(r[1] * 100) ? `${Math.round(r[0] * 100)}%`
+    : `${Math.round(r[0] * 100)}–${Math.round(r[1] * 100)}%`;
+
+/** "Model" (the model's own threshold, default) or a custom % (prefilled with today's model threshold). */
+function ThresholdField({ label, value, today, range, onChange }: {
+  label: string; value: number | null; today: number | null; range: [number, number] | null | undefined;
+  onChange: (v: number | null) => void;
+}) {
+  const [text, setText] = useState(value === null ? "" : String(value));
+  useEffect(() => setText(value === null ? "" : String(value)), [value]);
+  const ok = text.trim() !== "" && validProb(Number(text));
+  return (
+    <div className="bt-field">
+      <span>{label}</span>
+      <div className="bt-thr">
+        <div className="seg seg-sm" role="group" aria-label={label}>
+          <button className={value === null ? "on" : ""} onClick={() => onChange(null)}
+            title="The model's own threshold: its training base rate + 10 points, recomputed at every retrain">Model</button>
+          <button className={value !== null ? "on" : ""}
+            onClick={() => value === null && onChange(today !== null ? Math.round(today * 100) : 50)}>Custom</button>
+        </div>
+        {value !== null && (
+          <><input type="number" min={0} max={100} step={1} value={text} className={ok ? "" : "bad"}
+            onChange={(e) => { setText(e.target.value); const v = Number(e.target.value);
+              if (e.target.value.trim() !== "" && validProb(v)) onChange(v); }} /> %</>
+        )}
+      </div>
+      <small>{value === null ? `model: ${pctRange(range) || "—"} (base rate + 10 pts)` : "your threshold"}</small>
+    </div>
+  );
+}
+
+function Controls({ bt, today, ranges }: {
+  bt: ReturnType<typeof useBacktest>;
+  today: { buy: number | null; sell: number | null };
+  ranges: BacktestResult["model_thresholds"] | undefined;
+}) {
   const s = bt.settings;
   const [nText, setNText] = useState(String(s.n));
-  const [pText, setPText] = useState(String(s.minProb));
   useEffect(() => setNText(String(s.n)), [s.n]);
-  useEffect(() => setPText(String(s.minProb)), [s.minProb]);
   const nOk = validN(Number(nText));
-  const pOk = pText.trim() !== "" && validProb(Number(pText));
   return (
     <div className="bt-controls">
       <label className="bt-field">
@@ -59,12 +93,10 @@ function Controls({ bt }: { bt: ReturnType<typeof useBacktest> }) {
           ))}
         </div>
       </div>
-      <label className="bt-field">
-        <span>Buy when P ≥</span>
-        <input type="number" min={0} max={100} step={1} value={pText} className={pOk ? "" : "bad"}
-          onChange={(e) => { setPText(e.target.value); const v = Number(e.target.value); if (e.target.value.trim() !== "" && validProb(v)) bt.setSettings({ minProb: v }); }} />
-        <small>%</small>
-      </label>
+      <ThresholdField label="Buy when P ≥" value={s.minProb} today={today.buy} range={ranges?.buy}
+        onChange={(v) => bt.setSettings({ minProb: v })} />
+      <ThresholdField label="Sell when P ≥" value={s.sellMinProb} today={today.sell} range={ranges?.sell}
+        onChange={(v) => bt.setSettings({ sellMinProb: v })} />
       <div className="bt-field">
         <span>Each BUY</span>
         <div className="seg seg-sm" role="group" aria-label="Size of each purchase">
@@ -260,7 +292,8 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
             <TrainingDates r={r} />
           </details>
 
-          <Controls bt={bt} />
+          <Controls bt={bt} ranges={res?.model_thresholds}
+            today={{ buy: r.targets.short.current?.threshold ?? null, sell: r.targets.tp_short.current?.threshold ?? null }} />
 
           {bt.error && (
             <div className="ta-stale">{bt.error} <button className="link" onClick={onTrain}>Retrain</button></div>
@@ -269,9 +302,14 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
           {res && (
             <p className={`bt-pool ${res.pool[res.params.setups].qualified < res.params.n ? "warn" : ""}`}>
               <b>{res.pool[res.params.setups].qualified}</b> BUY decisions qualify ({STRATEGY[res.params.setups].toLowerCase()}
-              {res.params.setups === "both" ? " setups" : " setup"}, P ≥ {Math.round(res.params.min_prob * 100)}%, one per{" "}
-              {res.cooldown} bars) in {res.window.start} → {res.window.end}
+              {res.params.setups === "both" ? " setups" : " setup"}, P ≥{" "}
+              {res.params.min_prob === null ? `the model's threshold (${pctRange(res.model_thresholds.buy)})`
+                : `${Math.round(res.params.min_prob * 100)}%`}, one per {res.cooldown} bars) in {res.window.start} →{" "}
+              {res.window.end}
               {sc ? <>; the most recent <b>{sc.decisions}</b> are simulated.</> : "."}
+              {" "}SELL decisions: <b>{res.sell_decisions}</b> (P ≥{" "}
+              {res.params.sell_min_prob === null ? `the model's threshold (${pctRange(res.model_thresholds.sell)})`
+                : `${Math.round(res.params.sell_min_prob * 100)}%`}).
               {" "}Highest P: {pct(res.pool[res.params.setups].max_prob)}.
               {res.pool[res.params.setups].qualified < res.params.n && (
                 <> Fewer than the {res.params.n} requested: lower the threshold, pick both setups, or train on a longer
@@ -295,10 +333,13 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
               <Trades run={sc[sell]} barUnit={res.bar_unit} sizing={res.params.sizing} />
               <p className="ta-note">
                 How it works: P is the out-of-sample probability the walk-forward model gave each bar (it never saw that
-                bar's outcome). A BUY is any bar in the chosen setup with P at or above your threshold, at most one per{" "}
-                {res.cooldown} bars; the most recent N are taken. Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at
-                that close (also while holding); the training's next SELL decision sells everything held
-                {sell === "with_bracket" && "; each lot is also sold earlier at its own profit-take / stop-loss"}. Lots still
+                bar's outcome). A BUY is any bar in the chosen setup with P at or above the BUY threshold, at most one
+                per {res.cooldown} bars; the most recent N are taken. A SELL is any interim-top bar with the SELL model's P
+                at or above the SELL threshold. Both thresholds are the model's own by default (its training base rate +
+                10 points, recomputed at every retrain - the same decisions as the analysis) unless you set a number.
+                Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at that close (also while holding); the
+                next SELL decision sells everything held
+                {sell === "with_bracket" && `; each lot is also sold earlier at its own profit-take / stop-loss, or after ${r.targets.short.spec.horizon} sessions`}. Lots still
                 held are valued at the last close. Before commissions and slippage. Past results do not guarantee future results.
               </p>
             </div>

@@ -29,14 +29,16 @@ export function Elapsed({ since }: { since: number }) {
 
 interface Props {
   a: AnalysisApi;
-  /** The chart now shows another range / interval than the one analysed. */
-  stale: boolean;
+  /** How the chart differs from the training: other bars (interval / extended hours) or only another range. */
+  mismatch: "bars" | "range" | null;
+  /** The chart's range now. */
+  chartRange: string;
   onRetrain: () => void;
   /** Live price from the quote stream (the current K line is live). */
   livePrice: number | null;
 }
 
-export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
+export function AnalysisPanel({ a, mismatch, chartRange, onRetrain, livePrice }: Props) {
   const r = a.result;
   const [simVariant, setSimVariantState] = useState<SimVariant>(() => load<SimVariant>("simVariant", "sell_only"));
   const setSimVariant = (v: SimVariant) => {
@@ -56,10 +58,10 @@ export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
     <TargetCard
       t={r!.targets[k]} barUnit={r!.bar_unit} rangeWindow={r!.range_window} window={r!.window}
       showMarkers={a.visible[k]} onToggle={(on) => a.toggle(k, on)}
+      optimization={k === "short" ? r!.params.optimization : null}
       bracket={k === "short" ? {
         value: a.bracket,
         used: { mode: r!.params.bracket, tp: r!.params.tp_atr, sl: r!.params.sl_atr },
-        rules: r!.params.dynamic_rules,
         ranges: { tp: r!.params.tp_range, sl: r!.params.sl_range },
         onChange: a.setBracket, onRetrain, busy: a.loading,
       } : undefined}
@@ -88,8 +90,11 @@ export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
       {a.loading && (
         <div className="ta-loading">
           <div className="spinner" />
-          Retraining walk-forward models on this chart's K-lines + Yahoo factors… {a.startedAt && <Elapsed since={a.startedAt} />}
-          <small>Usually 5–30 seconds depending on the interval.</small>
+          {a.bracket.mode === "optimal"
+            ? <>Optimizing ATR: retraining the BUY model for 12 profit-take × stop-loss combinations…</>
+            : <>Retraining walk-forward models on this chart's K-lines + Yahoo factors…</>}{" "}
+          {a.startedAt && <Elapsed since={a.startedAt} />}
+          <small>{a.bracket.mode === "optimal" ? "Usually 40–90 seconds." : "Usually 5–30 seconds depending on the interval."}</small>
         </div>
       )}
 
@@ -107,16 +112,24 @@ export function AnalysisPanel({ a, stale, onRetrain, livePrice }: Props) {
               trade exits (● with return)
             </label>
           </div>
-          {stale && (
+          {mismatch === "bars" && (
             <div className="ta-stale">
-              These results were trained on <b>{rangeLabel(r.range)} · {TF_LABEL[r.timeframe]}</b>
-              {r.extended ? " (extended hours)" : ""}, not on the chart as shown now, so their markers are hidden.
+              These results were trained on <b>{TF_LABEL[r.timeframe]}</b> bars{r.extended ? " (extended hours)" : ""},
+              not the bars on the chart now, so their markers are hidden.
               <button className="link" onClick={onRetrain}>Retrain for the current chart</button>
+            </div>
+          )}
+          {mismatch === "range" && (
+            <div className="ta-stale soft">
+              Trained on the <b>{rangeLabel(r.range)}</b>; the chart now shows the <b>{rangeLabel(chartRange)}</b>. Same{" "}
+              {TF_LABEL[r.timeframe]} bars, so the markers and the current K decision still apply (drawn for the new view).
+              The "This chart range" figures and highlighted rows are for the {rangeLabel(r.range)}.
+              <button className="link" onClick={onRetrain}>Retrain for this range</button>
             </div>
           )}
           <TrainingDates r={r} />
           <CurrentKPanel r={r} intraday={a.intraday} livePrice={livePrice} />
-          <ReadingGuide />
+          <ReadingGuide buyHold={r.targets.short.spec.horizon} sellHold={r.targets.tp_short.spec.horizon} />
           <div className="ta-group">Short-term</div>
           <div className="ta-grid">{card("short")}{card("tp_short")}</div>
           <div className="ta-group">Most recent decisions</div>

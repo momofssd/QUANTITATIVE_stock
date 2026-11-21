@@ -14,7 +14,7 @@ export interface AnalysisInputs extends AnalysisQuery {
 }
 
 export interface Bracket {
-  mode: BracketMode; // "fixed": tp / sl below; "dynamic": set per decision from the chart
+  mode: BracketMode; // "fixed": tp / sl below; "optimal": the multiples with the best backtested profit
   tp: number;        // profit-take, x daily ATR (fixed mode)
   sl: number;        // stop-loss, x daily ATR (fixed mode)
 }
@@ -27,7 +27,10 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
   const [query, setQuery] = useState<AnalysisInputs | null>(null); // what `result` was trained on
   const [loading, setLoading] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [bracket, setBracketState] = useState<Bracket>(() => ({ ...DEFAULT_BRACKET, ...load("bracket", DEFAULT_BRACKET) }));
+  const [bracket, setBracketState] = useState<Bracket>(() => {
+    const b = { ...DEFAULT_BRACKET, ...load<Bracket>("bracket", DEFAULT_BRACKET) };
+    return (b.mode as string) === "dynamic" ? { ...b, mode: "optimal" } : b; // the old per-decision mode was replaced
+  });
   const [visible, setVisible] = useState<MarkerVisibility>({
     short: true, tp_short: true, exits: true,
   });

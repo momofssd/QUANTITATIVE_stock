@@ -1,5 +1,6 @@
 /** Plain-language guide to the analysis panel (collapsible). */
-export function ReadingGuide() {
+/** buyHold / sellHold = the BUY / SELL holding windows in trading sessions (from the trained specs). */
+export function ReadingGuide({ buyHold, sellHold }: { buyHold: number; sellHold: number }) {
   return (
     <details className="ta-method ta-guide">
       <summary>How to read this</summary>
@@ -9,13 +10,15 @@ export function ReadingGuide() {
           A short-term entry. Two things must agree: the bar is in a <b>Rebound</b> setup (price has been falling and the
           selling momentum is easing - MACD histogram rising below zero, RSI turning up from a low, a higher low or long
           lower wick) or a <b>Trend</b> setup (close &gt; SMA20 &gt; SMA50, both rising, ADX ≥ 20), <b>and</b> the
-          machine-learning model expects the price to reach the profit-take before the stop-loss within 5 trading days.
+          machine-learning model expects the price to reach the profit-take before the stop-loss within {buyHold} trading
+          days - a BUY can be held up to {buyHold} sessions.
         </dd>
         <dt>SELL (take profit)</dt>
         <dd>
           The bar is in an <b>Interim top</b> setup (price extended and bullish momentum fading - MACD histogram falling
           above zero, RSI turning down from a high, a lower high or long upper wick, or a close back down right after a new
-          20-bar high) <b>and</b> the take-profit model expects a 1.5 ATR pullback before a 1 ATR rise within 5 trading days.
+          20-bar high) <b>and</b> the take-profit model expects a 1.5 ATR pullback before a 1 ATR rise within {sellHold}{" "}
+          trading days.
           A SELL also closes an open BUY trade that is in profit.
         </dd>
         <dt>Current K line</dt>
@@ -39,7 +42,8 @@ export function ReadingGuide() {
         </dd>
         <dt>Justified / Setup only / Any bar</dt>
         <dd>
-          <b>Justified</b> = past BUY signals that reached the profit-take before the stop-loss within 5 trading days.
+          <b>Justified</b> = past BUY signals that reached the profit-take before the stop-loss within {buyHold} trading
+          days.
           <b> Setup only</b> = the same for every bar in the setup without the model; <b>Any bar</b> = for every bar. If
           Justified beats Setup only, the model adds something on top of the rules.
         </dd>
@@ -51,7 +55,8 @@ export function ReadingGuide() {
         <dt>Trade exit</dt>
         <dd>
           What happened if you had bought at the BUY and sold at the first of: the profit-take, the stop-loss, a SELL signal
-          while in profit, or the close after 5 trading sessions. <b>Any-bar entry</b> applies the same exits to every bar.
+          while in profit, or the close after {buyHold} trading sessions. <b>Any-bar entry</b> applies the same exits to
+          every bar.
         </dd>
         <dt>Projection (current K line)</dt>
         <dd>
@@ -61,13 +66,15 @@ export function ReadingGuide() {
           a <b>SELL</b> (projected selling price). The scenario closer to the live price is shown first; both are drawn on the
           chart as dashed "Proj. BUY" / "Proj. SELL" lines. It is a what-if on today's close, not a price forecast.
         </dd>
-        <dt>Fixed ATR vs Dynamic levels</dt>
+        <dt>Fixed ATR vs Optimized ATR</dt>
         <dd>
-          <b>Fixed ATR</b>: every BUY gets the same profit-take / stop-loss, in multiples of the daily ATR you set.
-          <b> Dynamic</b>: each BUY gets its own levels from the chart at that moment - the stop-loss just below the
-          5-session low, the profit-take at a 50% retracement of the recent fall (rebound) or 1.5× the risk (trend), within
-          limits. The decision tables show each level's distance in ATR and what set it. Switching retrains the model on
-          the new levels, so its AUC / hit rate are not comparable between the two modes - compare the $100 simulation.
+          <b>Fixed ATR</b>: every BUY gets the profit-take / stop-loss multiples of the daily ATR you set.
+          <b> Optimized ATR</b>: 12 combinations (profit-take 1–3 × ATR, stop-loss 0.75–1.5 × ATR) are each backtested
+          with their own retrained BUY model; about every quarter the one with the best total return over the trades
+          closed in the previous year of bars is used - only past trades, so the result is a fair test. The BUY card
+          compares it with fixed 1.5 / 1 and with the best combination in hindsight (which is only known afterwards).
+          Switching retrains the model on new levels, so AUC / hit rate are not comparable between modes - compare the
+          trade results and the $100 simulation.
         </dd>
         <dt>Simulation ($100 or 1 share)</dt>
         <dd>

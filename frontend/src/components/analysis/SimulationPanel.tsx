@@ -13,13 +13,13 @@ export type SimVariant = "sell_only" | "with_bracket";
 
 export const SIM_LABEL: Record<SimVariant, string> = {
   sell_only: "Sell everything at the next SELL decision",
-  with_bracket: "… or each lot earlier at its profit-take / stop-loss",
+  with_bracket: "… or each lot earlier at its profit-take / stop-loss / time limit",
 };
 
 export const SIZING_LABEL: Record<SimSizing, string> = { usd: "$100 per BUY", share: "1 share per BUY" };
 
 export const EXIT_BY: Record<SimTrade["reason"], string> = {
-  sell: "SELL decision", target: "Profit-take", stop: "Stop-loss", open: "Still holding",
+  sell: "SELL decision", target: "Profit-take", stop: "Stop-loss", "time limit": "Time limit", open: "Still holding",
 };
 
 const setupName = (s: SetupName) => (s ? SETUP_LABEL[s as Exclude<SetupName, "">] : "—");

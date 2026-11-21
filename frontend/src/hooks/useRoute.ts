@@ -1,4 +1,4 @@
-/** Page from the URL hash: "#/backtests" -> Backtests, anything else (incl. "#hist" anchors) -> Quote & Chart. */
+/** Page from the URL hash: "#/backtests" -> Backtests, anything else -> Quote & Chart. */
 import { useEffect, useState } from "react";
 
 export type Page = "chart" | "backtests";

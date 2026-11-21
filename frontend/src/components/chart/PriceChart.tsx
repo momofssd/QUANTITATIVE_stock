@@ -60,6 +60,9 @@ export const PriceChart = forwardRef<PriceChartHandle, Props>(function PriceChar
   useEffect(() => engine.current?.setMarkers(markers), [markers]);
   useEffect(() => engine.current?.setPriceLines(priceLines), [priceLines]);
 
+  const fit = () => engine.current?.fitView();
+  const zoom = (f: number) => engine.current?.zoom(f);
+
   useImperativeHandle(ref, () => ({
     applyTick: (tick, tf, extended) => engine.current?.applyTick(tick, tf, extended) ?? false,
   }), []);
@@ -67,7 +70,17 @@ export const PriceChart = forwardRef<PriceChartHandle, Props>(function PriceChar
   return (
     <div className="chart-stack">
       <ChartLegend model={legend} />
+      <div className="pane-main-wrap">
       <div className="pane pane-main" ref={mainEl} />
+      <div className="chart-zoom" role="group" aria-label="Chart view">
+        <button onClick={() => zoom(1.25)} title="Zoom out (time and price)" aria-label="Zoom out">−</button>
+        <button onClick={() => zoom(0.8)} title="Zoom in (time and price)" aria-label="Zoom in">+</button>
+        <button className="fit" onClick={fit}
+          title="Fit: show the selected range with prices auto-scaled and centred (undoes zoom, scroll and axis drags)">
+          ⤢ Fit
+        </button>
+      </div>
+      </div>
       <div className={`pane pane-sub${enabled.has("rsi") ? "" : " hidden"}`} ref={rsiEl}>
         <span className="pane-label">{rsiLabel}</span>
       </div>

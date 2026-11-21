@@ -60,7 +60,13 @@ function initial(): ChartSettingsState {
 function reducer(s: ChartSettingsState, a: Action): ChartSettingsState {
   switch (a.type) {
     case "symbol": return { ...s, symbol: a.symbol.toUpperCase() };
-    case "range": return { ...s, range: a.range, picked: null, from: "", to: "" };
+    case "range": {
+      // A range is a view: keep the interval shown now if the new range offers it (1Y Daily -> 5Y stays Daily, so
+      // the same bars and the trained markers stay); otherwise the new range's default interval.
+      const now = effectiveTimeframe(s.range, s.picked, s.from, s.to);
+      const keep = RANGE_TFS[a.range].includes(now) ? now : null;
+      return { ...s, range: a.range, picked: keep, from: "", to: "" };
+    }
     case "custom": return { ...s, range: "CUSTOM", from: a.from, to: a.to, picked: null };
     case "timeframe": return { ...s, picked: a.tf };
     case "chartType": return { ...s, chartType: a.chartType };

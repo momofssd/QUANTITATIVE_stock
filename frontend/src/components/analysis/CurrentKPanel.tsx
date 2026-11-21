@@ -238,7 +238,8 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
               {status && <div className={`ck-live ${status.tone}`}>{status.text}</div>}
               <p className="ta-note">
                 Entry = the K line's price when the model decided. Enter at or below the chase limit (entry + {r.chase_atr} ATR);
-                exit at the profit-take, the stop-loss, a SELL signal while in profit, or after 5 trading sessions.
+                exit at the profit-take, the stop-loss, a SELL signal while in profit, or after {cb.horizon_days} trading
+                sessions (the most a BUY is held).
               </p>
             </>
           )}

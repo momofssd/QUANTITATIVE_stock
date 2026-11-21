@@ -21,7 +21,7 @@ async def analysis(
     tp_atr: float = Query(1.5, description="short-term profit-take, x daily ATR (0.5-5)"),
     sl_atr: float = Query(1.0, description="short-term stop-loss, x daily ATR (0.25-5)"),
     bracket: str = Query("fixed", description="BUY profit-take / stop-loss: 'fixed' (tp_atr / sl_atr) or "
-                                              "'dynamic' (set per decision from the chart)"),
+                                              "'optimal' (chosen by backtested profit, walk-forward; slower)"),
     refresh: bool = Query(False, description="ignore the few-minute result cache (retrain)"),
 ):
     req = AnalysisRequest(symbol=require_symbol(symbol), range=range, timeframe=timeframe,

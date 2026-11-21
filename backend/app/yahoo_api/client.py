@@ -2,6 +2,10 @@
 
 yfinance is synchronous, so callers run fetch_factors() in a worker thread. Results are cached in memory
 (daily data only changes once a day; a few hours is plenty).
+
+Raw closes (auto_adjust=False), not dividend-adjusted ones: Yahoo recomputes adjusted closes on every download with
+tiny float differences (~$0.0002 on SPY / QQQ), which made two trainings on the same data pick slightly different
+decisions. Raw closes are identical on every download; the cost is a small drop on SPY / QQQ ex-dividend days.
 """
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ def fetch_factors(start: str) -> pd.DataFrame:
             import yfinance as yf
 
             tickers = [t for t, _ in FACTORS.values()]
-            raw = yf.download(tickers, start=start, interval="1d", auto_adjust=True, progress=False, threads=True)
+            raw = yf.download(tickers, start=start, interval="1d", auto_adjust=False, progress=False, threads=True)
         except Exception as exc:  # noqa: BLE001 - network / parsing issues inside yfinance
             raise ApiError(502, f"Yahoo Finance request failed: {exc}") from exc
         if raw is None or raw.empty or "Close" not in raw:

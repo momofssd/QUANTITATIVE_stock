@@ -636,3 +636,38 @@ label.bt-field { flex-direction: column; }
 .bt-compare tr.active td { background: var(--green-tint); }
 .bt-compare td small { color: var(--ink-3); font-size: 11px; }
 @media (max-width: 1100px) { .bt-blocks { grid-template-columns: minmax(0, 1fr); } }
+
+/* Chart view controls: zoom both axes / fit and centre (top-right of the price pane, left of the price axis) */
+.chart-zoom { position: absolute; top: 10px; right: 92px; z-index: 7; display: flex; gap: 0; border: 1px solid #cfcfcf;
+  border-radius: 4px; background: rgba(255,255,255,.92); box-shadow: 0 1px 2px rgba(0,0,0,.06); overflow: hidden; }
+.chart-zoom button { height: 26px; min-width: 28px; padding: 0 8px; border: 0; border-left: 1px solid #e2e2e2;
+  background: transparent; color: var(--ink-2); font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+.chart-zoom button:first-child { border-left: 0; }
+.chart-zoom button.fit { font-size: 12px; font-weight: 600; }
+.chart-zoom button:hover { background: #f1f5f0; color: var(--ink); }
+.chart-zoom button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.pane-main-wrap { position: relative; }
+/* phones: the legend fills the top, so the controls sit at the bottom-right of the price pane, above the time axis */
+@media (max-width: 640px) { .chart-zoom { right: 84px; top: auto; bottom: 34px; } }
+
+/* Optimized ATR section (BUY card) */
+.opt-now { font-size: 13px; line-height: 1.5; }
+.opt-now small { color: var(--ink-3); font-size: 12px; }
+.opt-compare { margin-top: 8px; }
+.opt-compare td { padding: 5px 8px; font-size: 12.5px; }
+.opt-compare td small { display: block; font-size: 11px; color: var(--ink-3); }
+.opt-compare .muted-row td { color: var(--ink-2); }
+.opt-grid { margin-top: 10px; }
+.opt-grid th, .opt-grid td { padding: 5px 8px; font-size: 12.5px; text-align: center; }
+.opt-grid td.l, .opt-grid th.l { text-align: left; }
+.opt-grid td small { display: block; font-size: 10.5px; color: var(--ink-3); }
+.opt-grid td.opt-cur { outline: 2px solid var(--focus); outline-offset: -3px; background: #f4f8fd; }
+.opt-hist { margin-top: 8px; font-size: 12.5px; }
+.opt-hist summary { cursor: pointer; color: var(--focus); }
+.opt-hist table { margin-top: 6px; }
+.opt-hist td, .opt-hist th { padding: 4px 8px; font-size: 12px; }
+
+.ta-stale.soft { background: #f5f9fd; border-color: #c5d8ee; color: var(--ink-2); }
+
+.bt-thr { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.bt-thr input { width: 60px; }

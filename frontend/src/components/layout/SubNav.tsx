@@ -13,10 +13,7 @@ export function SubNav({ page, clock }: { page: Page; clock: Clock | null }) {
     <div className="sub-nav">
       <div className="wrap sub-row">
         {page === "chart" ? (
-          <>
-            <a href="#/" className="active">Quote &amp; Chart</a>
-            <a href="#hist">Historical Data</a>
-          </>
+          <a href="#/" className="active">Quote &amp; Chart</a>
         ) : (
           <>
             <a href="#/">Quote &amp; Chart</a>

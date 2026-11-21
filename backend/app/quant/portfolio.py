@@ -5,8 +5,9 @@ Rules (long only, before costs):
       sizing "usd"    $100 worth (fractional shares)
       sizing "share"  1 share
   - the next SELL decision sells everything held (all open lots) at that bar's close
-  - variant "with_bracket": each lot is also sold on its own at its BUY's profit-take / stop-loss if that is hit
-    first (intrabar, so before a SELL at the same bar's close; filled at the level or at the open on a gap)
+  - variant "with_bracket": each lot is also sold on its own at its BUY's profit-take / stop-loss, or at the close
+    when its holding window (20 sessions) ends - whichever comes first, if before the next SELL (a profit-take /
+    stop-loss is intrabar, so before a SELL at the same bar's close; filled at the level or at the open on a gap)
   - lots still held at the end are valued at the last close ("open")
 A SELL and a BUY on the same bar: the SELL sells what was held before; the BUY then opens a new lot.
 Win rate and P&L are counted per lot, so they split exactly by the setup of the BUY that bought the lot.

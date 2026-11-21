@@ -35,8 +35,8 @@ class TargetSpec:
     horizon_mode: str = "bars"
     # "bar": ATR(14) of the analysed interval; "daily": daily ATR(14) known at the bar (previous day intraday).
     atr_basis: str = "bar"
-    # BUY levels: "fixed" = target_atr / stop_atr x ATR; "dynamic" = set per decision from the chart
-    # (quant/brackets.py; target_atr / stop_atr are then unused).
+    # BUY levels: "fixed" = target_atr / stop_atr x ATR; "optimal" = the multiples chosen by backtested profit,
+    # walk-forward (quant/optimize.py; target_atr / stop_atr then show the combination in use now).
     bracket: str = "fixed"
 
     @property
@@ -54,9 +54,12 @@ class TargetSpec:
 # Model choice from an out-of-sample comparison on SPY, QQQ, AAPL, MSFT, NVDA, JPM: for 5-day outcomes
 # gradient-boosted trees found a modest edge (mean AUC 0.55). (Long-term entries are being redesigned separately.)
 # BUY (short-term entry): justified when price reaches the profit-take (+1.5 daily ATR, adjustable) before the
-# stop-loss (-1 daily ATR, adjustable) within 5 trading sessions, on any candle interval. Only marked in a
+# stop-loss (-1 daily ATR, adjustable) within HOLD_SESSIONS (20) trading sessions, on any candle interval - a
+# BUY may be held up to 20 sessions for its profit-take / stop-loss. Only marked in a
 # "rebound" or "trend" setup (quant/setups.py). Traded as a bracket order that also exits on a SELL while in profit.
-SHORT = TargetSpec("short", "BUY - short-term entry", "entry", "up", horizon=5, target_atr=1.5, stop_atr=1.0,
+HOLD_SESSIONS = 20
+SHORT = TargetSpec("short", "BUY - short-term entry", "entry", "up", horizon=HOLD_SESSIONS, target_atr=1.5,
+                   stop_atr=1.0,
                    cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily", exit_with="tp_short")
 # SELL (take profit): a pullback of 1.5 daily ATR comes before a 1 ATR rise within 5 sessions; only marked in an
 # "interim top" setup (bullish momentum easing).
@@ -66,6 +69,7 @@ TARGETS = (SHORT, TP_SHORT)
 
 # outcome codes
 PENDING, TARGET, STOP, EXPIRED = "pending", "target", "stop", "expired"
+_NEVER = 1 << 62
 
 
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = ATR_LEN) -> pd.Series:
@@ -104,7 +108,7 @@ def triple_barrier(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr_v: 
       outcome      TARGET / STOP / EXPIRED / PENDING
     `end` / `complete` give each bar's horizon (default: spec.horizon bars). A bar that touches both barriers counts
     as a stop (conservative: the order inside the bar is unknown). `levels` = per-bar (target, stop) prices
-    instead of spec's ATR multiples (dynamic BUY levels).
+    instead of spec's ATR multiples.
     """
     n = len(close)
     if end is None or complete is None:
@@ -121,16 +125,16 @@ def triple_barrier(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr_v: 
         if not (np.isfinite(tgt) and np.isfinite(stp)):
             continue
         last = int(end[t])
-        for j in range(t + 1, last + 1):
-            stopped = low[j] <= stp if up else high[j] >= stp
-            if stopped:
-                label[t], resolved[t], outcome[t] = 0.0, j, STOP
-                break
-            reached = high[j] >= tgt if up else low[j] <= tgt
-            if reached:
-                label[t], resolved[t], outcome[t] = 1.0, j, TARGET
-                break
-        else:
-            if complete[t]:
-                label[t], resolved[t], outcome[t] = 0.0, last, EXPIRED
+        # first bar after t that touches the stop / the target (vectorised: horizons can be thousands of bars)
+        hi, lo = high[t + 1:last + 1], low[t + 1:last + 1]
+        stopped = lo <= stp if up else hi >= stp
+        reached = hi >= tgt if up else lo <= tgt
+        k_stop = int(stopped.argmax()) if stopped.any() else _NEVER
+        k_reach = int(reached.argmax()) if reached.any() else _NEVER
+        if k_stop <= k_reach and k_stop != _NEVER:            # a bar touching both counts as a stop
+            label[t], resolved[t], outcome[t] = 0.0, t + 1 + k_stop, STOP
+        elif k_reach != _NEVER:
+            label[t], resolved[t], outcome[t] = 1.0, t + 1 + k_reach, TARGET
+        elif complete[t]:
+            label[t], resolved[t], outcome[t] = 0.0, last, EXPIRED
     return label, resolved, outcome

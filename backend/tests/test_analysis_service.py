@@ -58,10 +58,13 @@ def test_align_modes():
 
 
 @pytest.mark.parametrize("tf, rng, start, bracket", [("1Day", "5Y", "2016-01-04T00:00:00Z", "fixed"),
-                                                      ("1Day", "1Y", "2016-01-04T00:00:00Z", "dynamic"),
-                                                      ("1Hour", "1M", "2025-06-01T00:00:00Z", "dynamic")])
+                                                      ("1Day", "1Y", "2016-01-04T00:00:00Z", "optimal"),
+                                                      ("1Hour", "1M", "2025-06-01T00:00:00Z", "optimal")])
 def test_compute_payload(monkeypatch, tf, rng, start, bracket):
     monkeypatch.setattr(svc, "MIN_RETRAIN_EVERY", 126)
+    from backend.app.quant import optimize as qo
+    monkeypatch.setattr(qo, "GRID_TP", (1.5, 2.0))     # a small grid keeps the test fast (default 1.5 / 1.0 inside)
+    monkeypatch.setattr(qo, "GRID_SL", (0.75, 1.0))
     df, session = frame(tf, start)
     if tf != "1Day":  # regular-hours bars only, like the chart
         et = df.index.tz_convert(ET)
@@ -73,15 +76,28 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
     start_view, end_view = svc.display_window(rng, None, None, now)
     r = svc.compute("TEST", df, session, daily, factors, rng=rng, tf=tf, intraday=tf != "1Day",
                     display_start=start_view, display_end=end_view, tp_atr=2.0, sl_atr=0.8, bracket=bracket)
-    assert r["params"]["tp_atr"] == 2.0 and r["targets"]["short"]["spec"]["target_atr"] == 2.0
+    assert r["params"]["tp_atr"] == 2.0
+    if bracket == "fixed":
+        assert r["targets"]["short"]["spec"]["target_atr"] == 2.0
     assert r["params"]["bracket"] == bracket and r["targets"]["short"]["spec"]["bracket"] == bracket
     buys = r["targets"]["short"]["signals"]
     for s in buys:
         assert {"tp_atr", "sl_atr", "target_basis", "stop_basis"} <= set(s)
         if bracket == "fixed":
             assert s["tp_atr"] == pytest.approx(2.0, abs=0.02) and s["sl_atr"] == pytest.approx(0.8, abs=0.02)
-        else:
-            assert 0.49 <= s["sl_atr"] <= 2.51 and s["tp_atr"] <= 3.51
+        else:   # every decision uses one of the grid's combinations
+            assert any(abs(s["tp_atr"] - tp) < 0.02 and abs(s["sl_atr"] - sl) < 0.02
+                       for tp in qo.GRID_TP for sl in qo.GRID_SL), (s["tp_atr"], s["sl_atr"])
+            assert s["target_basis"] == "optimized"
+    if bracket == "optimal":
+        o = r["params"]["optimization"]
+        assert len(o["grid"]) == len(qo.GRID_TP) * len(qo.GRID_SL) and o["choices"]
+        assert (o["current"]["tp"], o["current"]["sl"]) in [(g["tp"], g["sl"]) for g in o["grid"]]
+        spec = r["targets"]["short"]["spec"]
+        assert (spec["target_atr"], spec["stop_atr"]) == (o["current"]["tp"], o["current"]["sl"])
+        assert "strategy" in o and o["strategy"]["trades"] >= 0
+        cur = r["targets"]["short"]["current"]
+        assert abs(cur["tp_atr"] - o["current"]["tp"]) < 0.02 and abs(cur["sl_atr"] - o["current"]["sl"]) < 0.02
     for key, t in r["targets"].items():         # every decision explains itself
         for s in t["signals"]:
             w = s["why"]
@@ -92,6 +108,12 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
     from backend.app.quant import backtest as qbt
     run = r["_backtest"]
     assert all(c["setup"] in ("rebound", "trend") and 0 <= c["prob"] <= 1 for c in run["candidates"])
+    # default thresholds = the model's own: the backtest reproduces the analysis' BUY and SELL decisions exactly
+    default = qbt.backtest(run, n=qbt.MAX_DECISIONS)
+    buy_dates = [s["date"] for s in r["targets"]["short"]["signals"]][-qbt.MAX_DECISIONS:]
+    if default["result"]:
+        assert [t["buy_date"] for t in default["result"]["sell_only"]["trades"]][::-1] == buy_dates
+    assert default["sell_decisions"] == len(r["targets"]["tp_short"]["signals"])
     out = qbt.backtest(run, n=10, setups="both", min_prob=0.0, sizing="usd")
     if out["result"]:
         res = out["result"]
@@ -106,7 +128,9 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
         assert cur["rows"] <= svc.TRAIN_BARS and cur["start"] <= cur["end"] <= tr["data"]["end"]
         if t["first"]:
             f = t["first"]
-            assert f["end"] < f["predicts_from"] and f["predicts_from"] >= r["window"]["start"]   # no look-ahead
+            assert f["end"] < f["predicts_from"]                                   # no look-ahead
+            if key == "tp_short" or bracket == "fixed":   # the optimizer starts WARMUP bars earlier on purpose
+                assert f["predicts_from"] >= r["window"]["start"]
             assert f["rows"] >= tr["min_train"]
     pj = r["projection"]
     if pj:
