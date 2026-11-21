@@ -97,7 +97,7 @@ export function useChartSettings() {
       p.set("from", state.from);
       if (state.to) p.set("to", state.to);
     }
-    history.replaceState(null, "", "?" + p.toString());
+    history.replaceState(null, "", "?" + p.toString() + location.hash); // keep the page (#/backtests)
     if (state.range !== "CUSTOM") save("range", state.range);
   }, [state.symbol, state.range, state.picked, state.from, state.to]);
   useEffect(() => save("type", state.chartType), [state.chartType]);

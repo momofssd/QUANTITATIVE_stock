@@ -1,0 +1,68 @@
+import pytest
+
+from backend.app.quant import backtest as qbt
+from backend.app.quant import portfolio
+
+
+def cand(i, setup, prob, price=100.0, exit_=None):
+    return {"i": i, "time": i * 100, "date": f"d{i:02d}", "price": price, "setup": setup, "prob": prob, "exit": exit_}
+
+
+def ev(i, price):
+    return {"i": i, "time": i * 100, "date": f"d{i:02d}", "price": price}
+
+
+def test_select_applies_setup_threshold_cooldown_and_n():
+    cands = [cand(0, "rebound", 0.7), cand(2, "rebound", 0.8), cand(6, "trend", 0.65), cand(7, "trend", 0.5),
+             cand(12, "rebound", 0.61), cand(20, "trend", 0.9)]
+    both = qbt.select(cands, ("rebound", "trend"), 0.6, cooldown=5, n=100)
+    assert [c["i"] for c in both] == [0, 6, 12, 20]          # 2 is inside the cooldown after 0; 7 below 60%
+    assert [c["i"] for c in qbt.select(cands, ("trend",), 0.6, 5, 100)] == [6, 20]
+    assert [c["i"] for c in qbt.select(cands, ("rebound", "trend"), 0.6, 5, 2)] == [12, 20]   # most recent 2
+
+
+def test_ytd_counts_only_this_years_pnl():
+    lots_buys = [dict(cand(1, "rebound", 0.7), price=100.0), dict(cand(4, "trend", 0.7), price=100.0),
+                 dict(cand(6, "trend", 0.7), price=125.0)]
+    sells = [ev(3, 110.0), ev(7, 130.0)]
+    ys = {"i": 5, "date": "2026-01-01", "prev_close": 120.0}
+    r = portfolio.run(lots_buys, sells, ev(9, 128.0), use_bracket=False, sizing="share", year_start=ys)
+    y = r["summary"]["ytd"]
+    # lot d01 sold d03 (before the year) -> nothing; lot d04 held over the year end: 120 -> 130 = +10;
+    # lot d06 bought this year 125, sold d07 at 130 = +5
+    assert y["pnl"] == 15.0 and y["lots_held"] == 2 and y["lots_sold"] == 2
+    assert y["return_pct"] == round(15 / (120 + 125) * 100, 2)
+    s = r["summary"]
+    assert s["avg_return_pct"] == round((10 + 30 + 4) / 3, 2)    # per-lot returns 10%, 30%, 4%
+    assert s["avg_win_pct"] == s["avg_return_pct"] and s["avg_loss_pct"] is None
+
+
+def test_backtest_result_and_comparison():
+    cands = [cand(i, "rebound" if i % 2 else "trend", 0.55 + (i % 5) * 0.05, price=100 + i) for i in range(0, 60, 3)]
+    run = {"candidates": cands, "cooldown": 1, "sells": [ev(30, 140.0), ev(55, 120.0)],
+           "last": ev(59, 150.0), "year_start": {"i": 40, "date": "2026-01-01", "prev_close": 139.0}}
+    out = qbt.backtest(run, n=5, setups="both", min_prob=0.6, sizing="usd")
+    res = out["result"]
+    assert res["decisions"] == 5 and all(p >= 0.6 for p in res["probs"])
+    assert {c["setups"] for c in out["compare"]} == {"rebound", "trend", "both"}
+    both = next(c for c in out["compare"] if c["setups"] == "both")
+    assert both["sell_only"]["summary"]["total_pnl"] == res["sell_only"]["summary"]["total_pnl"]
+    assert "ytd" in res["sell_only"]["summary"] and "ytd" in res["with_bracket"]["summary"]
+    assert out["pool"]["both"]["qualified"] >= res["decisions"]
+    assert qbt.backtest(run, n=5, setups="trend", min_prob=0.99)["result"] is None   # nothing qualifies
+
+
+def test_service_validates_and_reports_missing_runs():
+    from backend.app.core.errors import ApiError
+    from backend.app.services import analysis_service as svc
+    with pytest.raises(ApiError) as e:
+        svc.run_backtest("nope", 30, "both", 0.6, "usd")
+    assert e.value.status == 404
+    svc._runs["t1"] = {"candidates": [], "cooldown": 5, "sells": [], "last": ev(1, 1.0), "year_start": None,
+                       "symbol": "X", "timeframe": "1Day", "range": "1Y", "bar_unit": "trading days", "window": {}}
+    try:
+        with pytest.raises(ApiError):
+            svc.run_backtest("t1", 101, "both", 0.6, "usd")
+        assert svc.run_backtest("t1", 30, "both", 0.6, "usd")["result"] is None
+    finally:
+        svc._runs.pop("t1", None)

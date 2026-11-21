@@ -72,7 +72,7 @@ function SetupRow({ name, t, all }: { name: string; t: SimTally; all?: boolean }
   );
 }
 
-function BySetup({ run }: { run: SimRun }) {
+export function BySetup({ run }: { run: SimRun }) {
   return (
     <div className="table-scroll sim-setups">
       <table className="grid">

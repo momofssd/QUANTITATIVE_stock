@@ -220,6 +220,7 @@ export interface SimTrade {
   status: "closed" | "open";
   reason: "sell" | "target" | "stop" | "open";
   setup: SetupName;  // setup of the BUY that bought the lot
+  prob?: number | null; // the model's P on that BUY (backtests)
   qty: number;       // shares ($100 / price, or 1)
   cost: number;      // dollars paid
   buy_time: number; buy_date: string; buy_price: number;
@@ -235,6 +236,52 @@ export interface SimTally {
   realized_pnl: number; open_pnl: number; total_pnl: number;
   invested: number; return_on_invested_pct: number | null;
   avg_pnl: number | null; best_pnl: number | null; worst_pnl: number | null; avg_bars: number | null;
+  // per transaction (sold lots)
+  avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null;
+  avg_win_pnl: number | null; avg_loss_pnl: number | null;
+}
+
+/** P&L earned since Jan 1 of the last bar's year (lots held over the year end count from the previous close). */
+export interface SimYtd {
+  since: string;
+  lots_held: number;
+  lots_sold: number;
+  wins: number;
+  win_rate: number | null;
+  pnl: number;
+  return_pct: number | null;
+  avg_return_pct: number | null;
+}
+
+export type BacktestSetups = "rebound" | "trend" | "both";
+
+export interface BacktestScenario {
+  decisions: number;
+  start_date: string;
+  end_date: string;
+  sells: number;
+  hold_all: { pnl: number; pnl_pct: number };
+  buy_hold: { pnl: number; pnl_pct: number };
+  probs: number[];
+  sell_only: SimRun;
+  with_bracket: SimRun;
+}
+
+export interface BacktestResult {
+  run_id: string;
+  symbol: string;
+  timeframe: string;
+  range: string;
+  bar_unit: string;
+  cooldown: number;
+  window: { start: string; end: string; bars: number };
+  params: { n: number; setups: BacktestSetups; min_prob: number; sizing: SimSizing };
+  /** BUY-setup bars in the window and how many qualify at the threshold, per strategy. */
+  pool: Record<BacktestSetups, { setup_bars: number; qualified: number; max_prob: number }>;
+  result: BacktestScenario | null;
+  compare: { setups: BacktestSetups; decisions: number; sell_only?: { summary: SimRun["summary"] };
+    with_bracket?: { summary: SimRun["summary"] } }[];
+  year_start: { i: number; date: string; prev_close: number | null } | null;
 }
 
 export interface SimRun {
@@ -244,6 +291,7 @@ export interface SimRun {
     max_capital: number;       // ... in dollars
     return_pct: number | null; // total P&L on max_capital
     sells_used: number;        // SELL decisions that sold something
+    ytd?: SimYtd;              // backtests only
   };
   by_setup: { rebound: SimTally; trend: SimTally };
 }
@@ -480,6 +528,8 @@ export interface AnalysisResult {
   simulation: Simulation | null;
   /** The actual dates every model of this run learned from. */
   training: TrainingInfo;
+  /** Server-side handle of this training for the Backtests page (/api/backtest/{run_id}). */
+  run_id: string;
   /** At which close would the current K line become a BUY / a SELL (null when it cannot be computed)? */
   projection: Projection | null;
   targets: Record<TargetKey, TargetResult>;

@@ -40,7 +40,7 @@ def _lot(b: dict, sells: list[dict], last: dict, use_bracket: bool, sizing: str)
     cost = qty * b["price"]
     pnl = qty * at["price"] - cost
     return {
-        "status": status, "reason": reason, "setup": b.get("setup", ""),
+        "status": status, "reason": reason, "setup": b.get("setup", ""), "prob": b.get("prob"),
         "qty": round(qty, 6), "cost": round(cost, 2),
         "buy_time": b["time"], "buy_date": b["date"], "buy_price": round(b["price"], 2),
         "sell_time": at["time"], "sell_date": at["date"], "sell_price": round(at["price"], 2),
@@ -56,6 +56,11 @@ def _tally(lots: list[dict]) -> dict:
     realized = sum(t["pnl"] for t in closed)
     open_pnl = sum(t["pnl"] for t in still)
     invested = sum(t["cost"] for t in lots)
+    won = [t for t in closed if t["pnl"] > 0]
+    lost = [t for t in closed if t["pnl"] <= 0]
+
+    def mean(v):
+        return round(sum(v) / len(v), 2) if v else None
     return {
         "lots": len(lots), "closed": len(closed), "open": len(still), "wins": wins, "losses": len(closed) - wins,
         "win_rate": round(wins / len(closed), 3) if closed else None,
@@ -66,6 +71,35 @@ def _tally(lots: list[dict]) -> dict:
         "best_pnl": max((t["pnl"] for t in closed), default=None),
         "worst_pnl": min((t["pnl"] for t in closed), default=None),
         "avg_bars": round(sum(t["bars"] for t in closed) / len(closed), 1) if closed else None,
+        # per transaction (sold lots): average return, average gain of winners, average loss of losers
+        "avg_return_pct": mean([t["pnl_pct"] for t in closed]),
+        "avg_win_pct": mean([t["pnl_pct"] for t in won]), "avg_loss_pct": mean([t["pnl_pct"] for t in lost]),
+        "avg_win_pnl": mean([t["pnl"] for t in won]), "avg_loss_pnl": mean([t["pnl"] for t in lost]),
+    }
+
+
+def _ytd(lots: list[dict], year_start: dict) -> dict:
+    """P&L earned since Jan 1 of the last bar's year. A lot held over the year end counts from the last close of
+    the previous year; lots sold before the year count nothing. year_start = {i, date, prev_close | None}."""
+    ys, prev = year_start["i"], year_start.get("prev_close")
+    pnl = basis = 0.0
+    held = 0
+    sold = []
+    for t in lots:
+        if t["status"] == "closed" and t["_exit_i"] < ys:
+            continue
+        held += 1
+        start = t["buy_price"] if t["_buy_i"] >= ys or prev is None else prev
+        pnl += t["qty"] * (t["sell_price"] - start)
+        basis += t["qty"] * start
+        if t["status"] == "closed":
+            sold.append(t)
+    wins = sum(t["pnl"] > 0 for t in sold)
+    return {
+        "since": year_start["date"], "lots_held": held, "lots_sold": len(sold), "wins": wins,
+        "win_rate": round(wins / len(sold), 3) if sold else None,
+        "pnl": round(pnl, 2), "return_pct": round(pnl / basis * 100, 2) if basis else None,
+        "avg_return_pct": round(sum(t["pnl_pct"] for t in sold) / len(sold), 2) if sold else None,
     }
 
 
@@ -83,7 +117,8 @@ def _peak(lots: list[dict]) -> tuple[int, float]:
     return peak, round(peak_money, 2)
 
 
-def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str = "usd") -> dict:
+def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str = "usd",
+        year_start: dict | None = None) -> dict:
     """buys:  {i, time, date, price, setup, exit: {i, time, date, price, reason} | None}  (exit = first
               profit-take / stop-loss hit after the entry, no time limit)
     sells: {i, time, date, price}
@@ -99,6 +134,8 @@ def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizi
         "return_pct": round(summary["total_pnl"] / peak_money * 100, 2) if peak_money else None,
         "sells_used": len({t["sell_time"] for t in lots if t["reason"] == SELL}),
     }
+    if year_start is not None:
+        summary["ytd"] = _ytd(lots, year_start)
     by_setup = {name: _tally([t for t in lots if t["setup"] == name]) for name in SETUPS}
     for t in lots:
         del t["_buy_i"], t["_exit_i"]

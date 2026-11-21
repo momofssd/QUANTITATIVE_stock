@@ -9,6 +9,7 @@ import {
   buildMarkers, buildPriceLines, type EntryMarker, type PriceLineDef,
 } from "./chart/markers";
 import { AnalysisPanel } from "./components/analysis/AnalysisPanel";
+import { BacktestPage } from "./components/backtest/BacktestPage";
 import { ChartCard } from "./components/chart/ChartCard";
 import type { PriceChartHandle } from "./components/chart/PriceChart";
 import { HistoryTable } from "./components/history/HistoryTable";
@@ -31,6 +32,7 @@ import { useLiveStream } from "./hooks/useLiveStream";
 import { usePolling } from "./hooks/usePolling";
 import { useQuote } from "./hooks/useQuote";
 import { useRecentSymbols } from "./hooks/useRecentSymbols";
+import { useRoute } from "./hooks/useRoute";
 import { etEpoch } from "./lib/format";
 import type { LiveMessage } from "./types/api";
 
@@ -40,6 +42,7 @@ const NO_LINES: PriceLineDef[] = [];
 const MINUTE_BAR_REFRESH_DELAY = 1500;
 
 export default function App() {
+  const page = useRoute(); // "#/backtests" -> Backtests; otherwise Quote & Chart
   const settings = useChartSettings();
   const { symbol, range, timeframe, from, to, extended, params } = settings;
   const banner = useBanner();
@@ -126,8 +129,8 @@ export default function App() {
   return (
     <>
       <header className="site-header">
-        <SiteHeader onPickSymbol={settings.actions.setSymbol} />
-        <SubNav clock={clock} />
+        <SiteHeader page={page} onPickSymbol={settings.actions.setSymbol} />
+        <SubNav page={page} clock={clock} />
       </header>
 
       <main className="wrap">
@@ -136,6 +139,12 @@ export default function App() {
           <Banner banner={{ kind: "error", title: "Alpaca credentials missing.", message: "", envHint: true }} />
         )}
 
+        {page === "backtests" && (
+          <BacktestPage a={analysis} chart={{ symbol, range, timeframe }} stale={!!ar && !resultMatchesChart}
+            onTrain={onAnalyze} onError={banner.showApiError} />
+        )}
+        {/* The chart page stays mounted (live stream, chart state, training) while Backtests is shown. */}
+        <div hidden={page !== "chart"}>
         <QuoteHeader symbol={symbol} quote={quote.quote} stream={stream} marketOpen={marketOpen} />
         <RecentSymbols symbols={recent} current={symbol} onPick={settings.actions.setSymbol} />
 
@@ -160,6 +169,7 @@ export default function App() {
           livePrice={quote.quote?.price ?? null}
         />
         <HistoryTable payload={bars?.payload ?? null} version={tickVersion} resetKey={fitKey} />
+        </div>
         <SiteFooter />
       </main>
     </>

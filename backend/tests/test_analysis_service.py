@@ -89,6 +89,15 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
             assert w["setups"].get(s["setup"], {"active": True})["active"]       # its setup held on that bar
             assert w["factors"] and {f["group"] for f in w["factors"]} <= set(GROUPS.values())
             assert any(v["label"] == "RSI(14)" for v in w["values"])
+    from backend.app.quant import backtest as qbt
+    run = r["_backtest"]
+    assert all(c["setup"] in ("rebound", "trend") and 0 <= c["prob"] <= 1 for c in run["candidates"])
+    out = qbt.backtest(run, n=10, setups="both", min_prob=0.0, sizing="usd")
+    if out["result"]:
+        res = out["result"]
+        assert res["decisions"] == min(10, out["pool"]["both"]["qualified"])
+        sm = res["sell_only"]["summary"]
+        assert sm["lots"] == res["decisions"] and "ytd" in sm
     tr = r["training"]
     assert tr["data"]["bars"] == len(df) and tr["train_bars"] == svc.TRAIN_BARS
     for key in ("short", "tp_short"):

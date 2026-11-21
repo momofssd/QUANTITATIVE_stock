@@ -18,7 +18,7 @@ import { TrainingDates } from "./TrainingDates";
 
 const rangeLabel = (rng: string) => (rng === "CUSTOM" ? "custom range" : `${rng} range`);
 
-function Elapsed({ since }: { since: number }) {
+export function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 500);

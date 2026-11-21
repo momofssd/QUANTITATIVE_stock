@@ -22,6 +22,8 @@ import asyncio
 import dataclasses
 import math
 import time
+import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,6 +33,7 @@ from sklearn.metrics import roc_auc_score
 from ..alpaca_api import feeds
 from ..core.errors import ApiError
 from ..core.timeutil import EARLIEST, ET, et_epoch, iso, now_et
+from ..quant import backtest as qbt
 from ..quant import brackets as qb
 from ..quant import explain as qe
 from ..quant import features as qf
@@ -69,6 +72,9 @@ BAR_UNIT = {
 }
 
 _cache: dict[tuple, tuple[float, dict]] = {}
+# Training runs kept for the Backtests page (run_id -> candidates, SELL decisions, ...); the most recent MAX_RUNS.
+_runs: OrderedDict[str, dict] = OrderedDict()
+MAX_RUNS = 30
 
 
 @dataclass(frozen=True)
@@ -124,8 +130,34 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
         tp_atr=req.tp_atr, sl_atr=req.sl_atr, bracket=req.bracket)
     result["extended"] = bool(req.extended and intraday)
     result["intraday_check"] = await intraday_snapshot(req.symbol)
+    run = result.pop("_backtest")
+    run_id = uuid.uuid4().hex[:12]
+    _runs[run_id] = {**run, "symbol": req.symbol, "timeframe": tf, "range": rng}
+    while len(_runs) > MAX_RUNS:
+        _runs.popitem(last=False)
+    result["run_id"] = run_id
     _cache[key] = (time.time(), result)
     return result
+
+
+def run_backtest(run_id: str, n: int, setups: str, min_prob: float, sizing: str) -> dict:
+    """Backtest scenarios on a training run (quant/backtest.py)."""
+    run = _runs.get(run_id)
+    if run is None:
+        raise ApiError(404, "This training is no longer on the server (it was restarted or the training is old). "
+                            "Run Find entry points again.")
+    if not 1 <= n <= qbt.MAX_DECISIONS:
+        raise ApiError(422, f"Number of decisions must be 1-{qbt.MAX_DECISIONS}.")
+    if setups not in qbt.SETUP_CHOICES:
+        raise ApiError(422, "setups must be rebound, trend or both.")
+    if not 0.0 <= min_prob <= 1.0:
+        raise ApiError(422, "The probability threshold must be between 0 and 100%.")
+    if sizing not in portfolio.SIZINGS:
+        raise ApiError(422, "sizing must be usd or share.")
+    _runs.move_to_end(run_id)
+    return {"run_id": run_id, "symbol": run["symbol"], "timeframe": run["timeframe"], "range": run["range"],
+            "bar_unit": run["bar_unit"], "cooldown": run["cooldown"], "window": run["window"],
+            **qbt.backtest(run, n=n, setups=setups, min_prob=min_prob, sizing=sizing)}
 
 
 async def intraday_snapshot(symbol: str) -> dict:
@@ -445,6 +477,31 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
     simulation = portfolio.simulate_decisions(
         [event(s) for s in targets["short"]["signals"]], [event(s) for s in targets["tp_short"]["signals"]],
         {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])})
+    # Backtests page: every BUY-setup bar of the model-check window with its out-of-sample P and first
+    # profit-take / stop-loss hit, the SELL decisions, the last bar and where the current year starts.
+    a_b, hz_b, wf_b, lv_b = fitted["short"][0], fitted["short"][1], fitted["short"][5], fitted["short"][6]
+    spec_b = next(sp for sp in specs if sp.key == "short")
+    candidates = []
+    for i in range(w0, w1):
+        p_i = wf_b.prob[i]
+        if not buy_names[i] or not np.isfinite(p_i) or not np.isfinite(a_b[i]) or a_b[i] <= 0:
+            continue
+        h = simulate(i, open_, high, low, close, a_b[i], spec_b, None, n - 1, False, lv_b.at(i))
+        candidates.append({
+            "i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i]), "setup": str(buy_names[i]),
+            "prob": float(p_i),
+            "exit": ({"i": h["exit_index"], "time": int(times[h["exit_index"]]), "date": stamps[h["exit_index"]],
+                      "price": h["price"], "reason": h["reason"]} if h["status"] == "closed" else None),
+        })
+    year = int(et_naive[-1].year)
+    ys = int(np.argmax(et_naive.year == year))
+    backtest_run = {
+        "candidates": candidates, "cooldown": int(hz_b.cooldown),
+        "sells": [event(s) for s in targets["tp_short"]["signals"]],
+        "last": {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])},
+        "year_start": {"i": ys, "date": f"{year}-01-01", "prev_close": float(close[ys - 1]) if ys > 0 else None},
+        "bar_unit": BAR_UNIT[tf], "window": {"start": stamps[w0], "end": stamps[w1 - 1], "bars": w1 - w0},
+    }
     for t in targets.values():
         for sgl in t["signals"]:
             sgl.pop("i")
@@ -490,6 +547,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         "targets": _training(fitted, stamps, session_ord, bar_dates.to_numpy(), n, w0, step),
     }
     return {
+        "_backtest": backtest_run,   # kept on the server for the Backtests page (run_analysis stores it)
         "training": training,
         "symbol": symbol,
         "range": rng,

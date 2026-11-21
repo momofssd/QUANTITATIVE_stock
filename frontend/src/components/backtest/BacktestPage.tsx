@@ -1,0 +1,310 @@
+/**
+ * Backtests page: scenarios on the CURRENT training (the last "Find entry points" run, see useAnalysis).
+ *   settings   most recent N BUY decisions (1-100, default 30) · strategy rebound / trend / both ·
+ *              buy when the model's P >= threshold (default 60%) · $100 or 1 share per BUY · sell rule
+ *   results    Overall · YTD · per transaction · by setup · rebound vs trend vs both · trades
+ * The server picks the decisions from that training's out-of-sample probabilities and simulates them
+ * (quant/backtest.py + quant/portfolio.py); nothing is retrained here.
+ */
+import { useEffect, useState } from "react";
+import { SETUP_LABEL } from "../../chart/markers";
+import { TF_LABEL } from "../../config/timeframes";
+import type { AnalysisApi } from "../../hooks/useAnalysis";
+import { N_RANGE, useBacktest, validN, validProb, type SellRule } from "../../hooks/useBacktest";
+import { price } from "../../lib/format";
+import type { ApiError } from "../../services/api";
+import type { BacktestResult, BacktestScenario, BacktestSetups, SetupName, SimRun, SimSizing } from "../../types/api";
+import { Elapsed } from "../analysis/AnalysisPanel";
+import { BySetup, EXIT_BY, SIM_LABEL, SIZING_LABEL } from "../analysis/SimulationPanel";
+import { TrainingDates } from "../analysis/TrainingDates";
+import { dirCls, pct, span, usd } from "../analysis/util";
+
+const STRATEGY: Record<BacktestSetups, string> = { rebound: "Rebound", trend: "Trend", both: "Both" };
+const money = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const signedPct = (v: number | null | undefined, d = 2) =>
+  v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`;
+const rangeLabel = (rng: string) => (rng === "CUSTOM" ? "custom range" : `${rng} range`);
+
+interface Props {
+  a: AnalysisApi;
+  chart: { symbol: string; range: string; timeframe: string };
+  stale: boolean;           // the chart now shows another range / interval than the training
+  onTrain: () => void;      // train on the chart as it is shown now
+  onError: (e: ApiError) => void;
+}
+
+/* ------------------------------------------------------------------ settings */
+
+function Controls({ bt }: { bt: ReturnType<typeof useBacktest> }) {
+  const s = bt.settings;
+  const [nText, setNText] = useState(String(s.n));
+  const [pText, setPText] = useState(String(s.minProb));
+  useEffect(() => setNText(String(s.n)), [s.n]);
+  useEffect(() => setPText(String(s.minProb)), [s.minProb]);
+  const nOk = validN(Number(nText));
+  const pOk = pText.trim() !== "" && validProb(Number(pText));
+  return (
+    <div className="bt-controls">
+      <label className="bt-field">
+        <span>Decisions</span>
+        <input type="number" min={N_RANGE[0]} max={N_RANGE[1]} step={1} value={nText} className={nOk ? "" : "bad"}
+          onChange={(e) => { setNText(e.target.value); const v = Number(e.target.value); if (validN(v)) bt.setSettings({ n: v }); }} />
+        <small>most recent, 1–100</small>
+      </label>
+      <div className="bt-field">
+        <span>Strategy</span>
+        <div className="seg seg-sm" role="group" aria-label="Strategy">
+          {(Object.keys(STRATEGY) as BacktestSetups[]).map((k) => (
+            <button key={k} className={s.setups === k ? "on" : ""} onClick={() => bt.setSettings({ setups: k })}>{STRATEGY[k]}</button>
+          ))}
+        </div>
+      </div>
+      <label className="bt-field">
+        <span>Buy when P ≥</span>
+        <input type="number" min={0} max={100} step={1} value={pText} className={pOk ? "" : "bad"}
+          onChange={(e) => { setPText(e.target.value); const v = Number(e.target.value); if (e.target.value.trim() !== "" && validProb(v)) bt.setSettings({ minProb: v }); }} />
+        <small>%</small>
+      </label>
+      <div className="bt-field">
+        <span>Each BUY</span>
+        <div className="seg seg-sm" role="group" aria-label="Size of each purchase">
+          {(Object.keys(SIZING_LABEL) as SimSizing[]).map((z) => (
+            <button key={z} className={s.sizing === z ? "on" : ""} onClick={() => bt.setSettings({ sizing: z })}>{SIZING_LABEL[z]}</button>
+          ))}
+        </div>
+      </div>
+      <div className="bt-field">
+        <span>Sell</span>
+        <div className="seg seg-sm" role="group" aria-label="When to sell">
+          {(Object.keys(SIM_LABEL) as SellRule[]).map((v) => (
+            <button key={v} className={s.sell === v ? "on" : ""} onClick={() => bt.setSettings({ sell: v })}>{SIM_LABEL[v]}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ results */
+
+function Stat({ label, value, cls, sub }: { label: string; value: string; cls?: string; sub?: string }) {
+  return <div className="bt-stat"><label>{label}</label><b className={cls}>{value}</b>{sub && <small>{sub}</small>}</div>;
+}
+
+function Blocks({ sc, run, sizing, barUnit }: { sc: BacktestScenario; run: SimRun; sizing: SimSizing; barUnit: string }) {
+  const s = run.summary;
+  const y = s.ytd;
+  const lot = sizing === "usd" ? "$100" : "1 share";
+  return (
+    <div className="bt-blocks">
+      <div className="bt-block">
+        <h3>Overall <small>{sc.start_date} → {sc.end_date}</small></h3>
+        <div className="bt-big">
+          <b className={dirCls(s.total_pnl)}>{usd(s.total_pnl)}</b>
+          <span className={dirCls(s.return_on_invested_pct)}>{signedPct(s.return_on_invested_pct)} on {money(s.invested)} invested</span>
+        </div>
+        <div className="bt-stats">
+          <Stat label="Win rate" value={pct(s.win_rate)} cls={s.win_rate !== null && s.win_rate >= 0.5 ? "up" : ""} sub={`${s.wins} won / ${s.losses} lost`} />
+          <Stat label="Lots" value={String(s.lots)} sub={`${s.closed} sold · ${s.open} still held`} />
+          <Stat label="Realized" value={usd(s.realized_pnl)} cls={dirCls(s.realized_pnl)} />
+          <Stat label="Still held" value={s.open ? usd(s.open_pnl) : "none"} cls={dirCls(s.open_pnl)} sub="at the last close" />
+          <Stat label="Max at work" value={money(s.max_capital)} sub={`${s.max_lots} lots at once · ${signedPct(s.return_pct, 1)} on it`} />
+          <Stat label="Same BUYs, never sold" value={usd(sc.hold_all.pnl)} cls={dirCls(sc.hold_all.pnl)} sub={`${lot} at the first BUY, held: ${usd(sc.buy_hold.pnl)}`} />
+        </div>
+      </div>
+      <div className="bt-block">
+        <h3>YTD <small>since {y?.since ?? "—"}</small></h3>
+        {y ? (
+          <>
+            <div className="bt-big">
+              <b className={dirCls(y.pnl)}>{usd(y.pnl)}</b>
+              <span className={dirCls(y.return_pct)}>{signedPct(y.return_pct)} on the money at work this year</span>
+            </div>
+            <div className="bt-stats">
+              <Stat label="Win rate" value={pct(y.win_rate)} cls={y.win_rate !== null && y.win_rate >= 0.5 ? "up" : ""} sub={`${y.wins} of ${y.lots_sold} sold this year`} />
+              <Stat label="Lots held this year" value={String(y.lots_held)} sub={`${y.lots_sold} sold this year`} />
+              <Stat label="Avg / sold lot" value={signedPct(y.avg_return_pct)} cls={dirCls(y.avg_return_pct)} />
+            </div>
+            <p className="ta-note">Lots held over the year end count from the last close of the previous year.</p>
+          </>
+        ) : <p className="ta-note">No YTD figures.</p>}
+      </div>
+      <div className="bt-block">
+        <h3>Per transaction <small>sold lots</small></h3>
+        <div className="bt-big">
+          <b className={dirCls(s.avg_return_pct)}>{signedPct(s.avg_return_pct)}</b>
+          <span>average return per trade{s.avg_pnl !== null && <> ({usd(s.avg_pnl)})</>}</span>
+        </div>
+        <div className="bt-stats">
+          <Stat label="Avg gain (winners)" value={signedPct(s.avg_win_pct)} cls="up" sub={s.avg_win_pnl !== null ? usd(s.avg_win_pnl) : undefined} />
+          <Stat label="Avg loss (losers)" value={signedPct(s.avg_loss_pct)} cls="down" sub={s.avg_loss_pnl !== null ? usd(s.avg_loss_pnl) : undefined} />
+          <Stat label="Best / worst" value={`${usd(s.best_pnl)} / ${usd(s.worst_pnl)}`} />
+          <Stat label="Avg held" value={s.avg_bars !== null ? span(Math.round(s.avg_bars), barUnit) : "—"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Compare({ r, sell, onPick }: { r: BacktestResult; sell: SellRule; onPick: (k: BacktestSetups) => void }) {
+  return (
+    <div className="table-scroll">
+      <table className="grid bt-compare">
+        <thead>
+          <tr>
+            <th className="l">Strategy</th><th>Decisions</th><th>Win rate</th><th>Total P&amp;L</th><th>Return / $ invested</th>
+            <th>Avg / trade</th><th>YTD P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {r.compare.map((c) => {
+            const s = c[sell]?.summary;
+            const active = c.setups === r.params.setups;
+            return (
+              <tr key={c.setups} className={`${active ? "active" : ""} clickable`} onClick={() => onPick(c.setups)}
+                title="Show this strategy">
+                <td className="l">{active ? <b>{STRATEGY[c.setups]}</b> : STRATEGY[c.setups]}
+                  <small> · {r.pool[c.setups].qualified} qualify</small></td>
+                <td>{c.decisions}</td>
+                <td>{s ? pct(s.win_rate) : "—"}</td>
+                <td className={dirCls(s?.total_pnl)}>{s ? <b>{usd(s.total_pnl)}</b> : "—"}</td>
+                <td className={dirCls(s?.return_on_invested_pct)}>{s ? signedPct(s.return_on_invested_pct) : "—"}</td>
+                <td className={dirCls(s?.avg_return_pct)}>{s ? signedPct(s.avg_return_pct) : "—"}</td>
+                <td className={dirCls(s?.ytd?.pnl)}>{s?.ytd ? usd(s.ytd.pnl) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Trades({ run, barUnit, sizing }: { run: SimRun; barUnit: string; sizing: SimSizing }) {
+  return (
+    <div className="table-scroll">
+      <table className="grid">
+        <thead>
+          <tr>
+            <th className="l">Bought</th><th className="l">Setup</th><th>P</th><th>Lot</th><th>at</th><th className="l">Sold</th>
+            <th>at</th><th className="l">Exit by</th><th>Held</th><th>P&amp;L</th><th>Return</th>
+          </tr>
+        </thead>
+        <tbody>
+          {run.trades.map((t) => (
+            <tr key={t.buy_time} className={t.status === "open" ? "sim-open" : ""}>
+              <td className="l">{t.buy_date}</td>
+              <td className="l">{t.setup ? SETUP_LABEL[t.setup as Exclude<SetupName, "">] : "—"}</td>
+              <td>{pct(t.prob)}</td>
+              <td title={`${t.qty} shares for ${money(t.cost)}`}>{sizing === "usd" ? `${t.qty.toFixed(3)} sh` : `1 sh · ${money(t.cost)}`}</td>
+              <td>{price(t.buy_price)}</td>
+              <td className="l">{t.status === "open" ? <i>last close {t.sell_date}</i> : t.sell_date}</td>
+              <td>{price(t.sell_price)}</td>
+              <td className="l">{EXIT_BY[t.reason]}</td>
+              <td>{span(t.bars, barUnit)}</td>
+              <td className={dirCls(t.pnl)}><b>{usd(t.pnl)}</b></td>
+              <td className={dirCls(t.pnl_pct)}>{signedPct(t.pnl_pct)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ page */
+
+export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
+  const r = a.result;
+  const bt = useBacktest(r?.run_id ?? null, onError);
+  const res = bt.result;
+  const sc = res?.result ?? null;
+  const sell = bt.settings.sell;
+  const tfLabel = (TF_LABEL as Record<string, string>)[chart.timeframe] ?? chart.timeframe;
+  const chartText = `${chart.symbol} · ${rangeLabel(chart.range)} · ${tfLabel} bars`;
+  return (
+    <section className="card bt-page">
+      <div className="card-title">
+        <h2>Backtests <small>scenarios on the current training · research output, not advice</small></h2>
+        <div className="ct-right">
+          {r && <button className="btn btn-ghost" onClick={onTrain} disabled={a.loading}>Retrain on the current chart</button>}
+        </div>
+      </div>
+
+      {a.loading && (
+        <div className="ta-loading">
+          <div className="spinner" />
+          Training on {chartText}… {a.startedAt && <Elapsed since={a.startedAt} />}
+          <small>Usually 5–30 seconds depending on the interval.</small>
+        </div>
+      )}
+
+      {!r && !a.loading && (
+        <div className="bt-empty">
+          <p>No training yet. Backtests run on the BUY / SELL models trained by <b>Find entry points</b>.</p>
+          <button className="btn btn-primary" onClick={onTrain}>Train now on {chartText}</button>
+          <p className="ta-note">Or open <a href="#/">Quote &amp; Chart</a>, set the range and interval, and press Find entry points.</p>
+        </div>
+      )}
+
+      {r && !a.loading && (
+        <div className="bt-body">
+          <div className="bt-training">
+            Based on the current training: <b>{r.symbol} · {rangeLabel(r.range)} · {TF_LABEL[r.timeframe]} bars</b>
+            {r.extended ? " (extended hours)" : ""} · trained {r.training?.trained_at} · decisions from the model-check window{" "}
+            <b>{r.window.start} → {r.window.end}</b> ({r.window.bars.toLocaleString()} bars)
+            {stale && <span className="bt-stale"> · the chart now shows {chartText}</span>}
+          </div>
+          <details className="bt-dates">
+            <summary>Training dates for this run</summary>
+            <TrainingDates r={r} />
+          </details>
+
+          <Controls bt={bt} />
+
+          {bt.error && (
+            <div className="ta-stale">{bt.error} <button className="link" onClick={onTrain}>Retrain</button></div>
+          )}
+
+          {res && (
+            <p className={`bt-pool ${res.pool[res.params.setups].qualified < res.params.n ? "warn" : ""}`}>
+              <b>{res.pool[res.params.setups].qualified}</b> BUY decisions qualify ({STRATEGY[res.params.setups].toLowerCase()}
+              {res.params.setups === "both" ? " setups" : " setup"}, P ≥ {Math.round(res.params.min_prob * 100)}%, one per{" "}
+              {res.cooldown} bars) in {res.window.start} → {res.window.end}
+              {sc ? <>; the most recent <b>{sc.decisions}</b> are simulated.</> : "."}
+              {" "}Highest P: {pct(res.pool[res.params.setups].max_prob)}.
+              {res.pool[res.params.setups].qualified < res.params.n && (
+                <> Fewer than the {res.params.n} requested: lower the threshold, pick both setups, or train on a longer
+                  range (MAX) for more.</>
+              )}
+            </p>
+          )}
+
+          {bt.loading && !res && <div className="ta-loading"><div className="spinner" />Running the backtest…</div>}
+
+          {res && !sc && <p className="bt-none">No BUY decisions match these settings.</p>}
+
+          {res && sc && (
+            <div className={bt.loading ? "bt-results busy" : "bt-results"}>
+              <Blocks sc={sc} run={sc[sell]} sizing={res.params.sizing} barUnit={res.bar_unit} />
+              <div className="ta-section">Win rate and P&amp;L by BUY setup</div>
+              <BySetup run={sc[sell]} />
+              <div className="ta-section">Rebound vs trend vs both (same decisions count, threshold and lot size)</div>
+              <Compare r={res} sell={sell} onPick={(k) => bt.setSettings({ setups: k })} />
+              <div className="ta-section">Trades ({sc[sell].trades.length} lots, newest first)</div>
+              <Trades run={sc[sell]} barUnit={res.bar_unit} sizing={res.params.sizing} />
+              <p className="ta-note">
+                How it works: P is the out-of-sample probability the walk-forward model gave each bar (it never saw that
+                bar's outcome). A BUY is any bar in the chosen setup with P at or above your threshold, at most one per{" "}
+                {res.cooldown} bars; the most recent N are taken. Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at
+                that close (also while holding); the training's next SELL decision sells everything held
+                {sell === "with_bracket" && "; each lot is also sold earlier at its own profit-take / stop-loss"}. Lots still
+                held are valued at the last close. Before commissions and slippage. Past results do not guarantee future results.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}

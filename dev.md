@@ -19,7 +19,8 @@ indicators, plus an on-demand quantitative **short-term BUY & SELL analysis** ([
 6. [Conventions](#6-conventions)
 7. [How to extend](#7-how-to-extend)
 8. [Short-term BUY & SELL analysis](#8-short-term-buy--sell-analysis)
-9. [Next phase](#9-next-phase)
+9. [Backtests page](#9-backtests-page)
+10. [Next phase](#10-next-phase)
 
 ---
 
@@ -155,7 +156,8 @@ uvicorn loads.
 | `targets.py` | `TargetSpec` (kind `entry`/`take_profit`, direction, horizon, `target_atr`, `stop_atr`, cooldown, model, trailing-stop settings, `exit_with`, `horizon_mode`, `atr_basis`, `bracket`). `SHORT` (BUY) and `TP_SHORT` (SELL). Wilder `atr()`. `triple_barrier()` → label (1 / 0 / NaN), `resolved_at` (bar on which the outcome became known), outcome (target / stop / expired / pending); direction-aware; optional per-bar `levels`. |
 | `brackets.py` | BUY profit-take / stop-loss per bar: `fixed_levels()` (the user's daily-ATR multiples) or `dynamic_levels()` (from the chart at the decision, see [8.3](#83-profit-take--stop-loss-levels)). `session_extreme()` = lowest low / highest high of the current session so far + previous sessions (no look-ahead). Each level carries a short "basis" text (`5-session low`, `50% retracement`, `min 0.75 ATR`, ...). |
 | `trades.py` | `simulate()`: trade one entry (stop, target, optional trailing stop, optional take-profit signal, time limit; gaps fill at the open; conservative same-bar rule; optional explicit levels). `summarize()`: win rate, avg / median return, R, profit factor, holding bars, exit reasons. |
-| `portfolio.py` | Simulation over the 30 most recent BUYs ([8.7](#87-100-simulation)): `run(sizing="usd"\|"share")` (every BUY buys a lot of $100 or 1 share; the next SELL sells every lot held; optionally each lot at its own profit-take / stop-loss first; totals + `by_setup` rebound / trend, max lots and money held at once), `simulate_decisions()` (both sizings × both variants + "same BUYs never sold" + one lot bought at the first BUY and held). |
+| `backtest.py` | Backtests page ([section 9](#9-backtests-page)): `select()` (BUY decisions under the user's rules: setup in rebound / trend / both, P ≥ threshold, one per cooldown, most recent N), `backtest()` (the chosen scenario with both sell rules + YTD, a rebound / trend / both comparison, and how many decisions qualify per strategy). |
+| `portfolio.py` | Simulation over the 30 most recent BUYs ([8.7](#87-100-simulation)): `run(sizing="usd"\|"share")` (every BUY buys a lot of $100 or 1 share; the next SELL sells every lot held; optionally each lot at its own profit-take / stop-loss first; totals + `by_setup` rebound / trend, max lots and money held at once), `simulate_decisions()` (both sizings × both variants + "same BUYs never sold" + one lot bought at the first BUY and held). Per transaction: `avg_return_pct`, `avg_win_pct` / `avg_loss_pct` (and $). Optional `year_start` → `summary.ytd` (P&L earned since Jan 1; lots held over the year end count from the previous year's last close). |
 | `explain.py` | `explain_decision()`: what supported one decision (expanded decision row): the deciding fold's P vs threshold and base rate, `group_effects()` (P with the bar's real values minus P with one factor group at its training medians, per group), the setup checklist(s) on that bar, ~15 readable indicator values. |
 | `features.py` | `stock_features()` on the analysed interval's bars + `market_features()` per day (stock daily closes + Yahoo factors), attached to bars by `align()`: `same` (daily), `week_end` (weekly), `previous` (intraday: previous day's values only). `build_features()` combines them: 54 features, each tagged with a group in `GROUPS` (Stock momentum, Stock trend, Stock volatility & volume, Momentum shift & setups, SPY, QQQ, VIX, Oil & gasoline, Interest rate). |
 | `setups.py` | `compute_setups()`: rule-based setups per bar (`rebound`, `trend`, `top`), their component conditions and numeric momentum-shift values (MACD-histogram / RSI change, ADX, +DI−DI, wicks, streaks, bars since 20-bar high / low). `explain()` lists which conditions hold on a bar (the current K line in the UI). |
@@ -179,7 +181,7 @@ uvicorn loads.
 | `bars_service.py` | `build_bars(BarsRequest)`, the chart's data: range → display window (`display_window`); daily+ always loads full history from 2016; intraday loads the window (+ `load_from` for scroll-back); warm-up days from the indicator lengths (`warmup_days`); regular-session filter unless extended; indicators, trim, `view_start` / `has_more` / `truncated`, column-oriented JSON. Constants `TIMEFRAME_MINUTES`, `RANGE_DEFAULT_TF`, `SESSION_RANGES` (1D, 5D), `MAX_BARS`. Shared helpers `resolve_range()` (validate range + interval) and `fetch_frame()` (an interval's bars exactly as the chart shows them). |
 | `quote_service.py` | `build_quote()`: asset + snapshot + ~1 y daily bars (cached 15 s) → price, change vs previous close, day OHLCV, 52-week range, average volumes. `day_and_prev()` handles pre-market (latest daily bar is yesterday's session). |
 | `search_service.py` | `rank()`: exact symbol, then symbol prefix, then name contains. `search()`. |
-| `analysis_service.py` | `run_analysis(AnalysisRequest(symbol, range, timeframe, start, end, extended, tp_atr, sl_atr, bracket))`: the chart's bars + the stock's daily bars + Yahoo factors → `compute()` in a worker thread → payload ([section 8](#8-short-term-buy--sell-analysis)). `eval_window()` → `(r0, w0, w1)` = chart range and model-check window. The UI always sends `refresh=true` (each click retrains); results are also cached 10 minutes per request. |
+| `analysis_service.py` | `run_analysis(AnalysisRequest(symbol, range, timeframe, start, end, extended, tp_atr, sl_atr, bracket))`: the chart's bars + the stock's daily bars + Yahoo factors → `compute()` in a worker thread → payload ([section 8](#8-short-term-buy--sell-analysis)). `eval_window()` → `(r0, w0, w1)` = chart range and model-check window. The UI always sends `refresh=true` (each click retrains); results are also cached 10 minutes per request. Each run gets a `run_id`; its backtest data (every BUY-setup bar of the model-check window with its out-of-sample P and first profit-take / stop-loss hit, the SELL decisions, the last bar, the year start) is kept in memory (`_runs`, the last 30 runs) for `run_backtest()`. |
 
 ### `live/` and `api/`
 
@@ -192,6 +194,7 @@ uvicorn loads.
 | `api/routes/quote.py` | `GET /api/quote/{symbol}` |
 | `api/routes/bars.py` | `GET /api/bars/{symbol}` (query parameters documented in the signature; see `/docs`) |
 | `api/routes/analysis.py` | `GET /api/analysis/{symbol}` and `GET /api/analysis/{symbol}/intraday` (today's 5-minute check; the UI polls it every minute) |
+| `api/routes/backtest.py` | `GET /api/backtest/{run_id}` (Backtests page) |
 | `api/routes/live.py` | `WS /ws/live/{symbol}`, `GET /api/live/status` |
 
 ### `backend/tests/`
@@ -207,6 +210,7 @@ uvicorn loads.
 | `test_trades.py` | bracket / trailing / SELL-signal / time exits, gap fills, open trades |
 | `test_setups.py` | rebound / trend / interim-top setups, `explain()`, the 5-minute check |
 | `test_projection.py` | projected prices = the nearest trigger (stub models), zone, closer side, "now" case |
+| `test_backtest.py` | decision selection (setup, threshold, cooldown, N), YTD accounting, per-trade averages, comparison, missing run / bad parameters |
 | `test_brackets_portfolio.py` | dynamic levels (swing low, retracement, clamps, no look-ahead), simulation (lots, SELL sells all, bracket exits, same-bar order, per-setup totals, 1-share sizing) |
 | `test_analysis_service.py` | full analysis pipeline on synthetic data (fixed + dynamic levels, range window, simulation, projection, decision explanations); features unchanged by later bars |
 
@@ -228,6 +232,7 @@ Interactive docs: <http://127.0.0.1:8000/docs>
 | `GET /api/live/status` | | hub state, watched symbols, upstream open / closed counters |
 | `GET /api/analysis/{sym}` | `range`, `timeframe` (not 1Month), `start` / `end` (CUSTOM), `extended`, `tp_atr` / `sl_atr` (BUY profit-take / stop-loss, × daily ATR), `bracket=fixed\|dynamic`, `refresh` | the analysis payload ([section 8](#8-short-term-buy--sell-analysis)); takes 5–30 s |
 | `GET /api/analysis/{sym}/intraday` | | today's (latest session's) 5-minute check: checks, BUY / SELL verdicts |
+| `GET /api/backtest/{run_id}` | `n` (1–100, default 30), `setups=rebound\|trend\|both`, `min_prob` (0–1, default 0.6), `sizing=usd\|share` | backtest scenarios on that training ([section 9](#9-backtests-page)); 404 when the run is no longer on the server |
 | `WS /ws/live/{sym}` | | live messages ([4.3](#43-live-stream)) |
 
 ### 4.2 Data feeds
@@ -294,6 +299,8 @@ config/ lib/ types/   constants, pure helpers, API types (no React)
 - symbol → `useQuote` + `useLiveStream` → `QuoteHeader`, chart live candle (via ref)
 - `usePolling` → slow REST reconciliation (fast fallback when the stream is down)
 - `useAnalysis` → markers / price lines (only while the result matches the chart) + `AnalysisPanel`
+- `useRoute` → page: `#/backtests` shows `BacktestPage` (same `useAnalysis` training); the chart page stays mounted
+  but hidden, so the live stream, chart state and training survive switching pages
 
 Live ticks go to the chart through a ref (`PriceChartHandle.applyTick`) so they do not re-render React; the history
 table is told to re-read via a version counter.
@@ -338,13 +345,15 @@ table is told to re-read via a version counter.
 | `usePolling.ts` | interval with latest-callback semantics |
 | `useAnalysis.ts` | runs `/api/analysis` on demand (always retrains) and keeps the query it was trained on (`App.tsx` hides the markers and shows "stale" when range / interval / extended / custom dates differ); cleared on symbol change; marker visibility (BUY, SELL and exits all start on after every run); the BUY level mode + multiples (localStorage); refreshes the 5-minute check every minute while results are shown. |
 | `useRecentSymbols.ts` | last 10 symbols in localStorage |
+| `useRoute.ts` | page from the URL hash: `#/backtests` → Backtests, anything else → Quote & Chart (`#hist` anchors too). `useChartSettings` keeps the hash when it rewrites the query string. |
+| `useBacktest.ts` | Backtests settings (N, strategy, P threshold %, lot size, sell rule; localStorage), debounced `/api/backtest/{run_id}` request whenever they or the training change; superseded requests aborted |
 
 ### `components/`
 
 | Component | Contents |
 |---|---|
-| `layout/SiteHeader.tsx` | brand, primary nav, SearchBox |
-| `layout/SubNav.tsx` | secondary tabs + market open / closed |
+| `layout/SiteHeader.tsx` | brand, primary nav (News & Research = `#/`, Backtests = `#/backtests`, active by page), SearchBox |
+| `layout/SubNav.tsx` | secondary tabs (Quote & Chart, Historical Data) + market open / closed |
 | `layout/Banner.tsx` | error / warning bar (with `.env` hint) |
 | `layout/SiteFooter.tsx` | data notes + TradingView attribution (required by the chart library licence) |
 | `search/SearchBox.tsx` | debounced autocomplete, arrow keys, Enter, click |
@@ -371,6 +380,7 @@ table is told to re-read via a version counter.
 | `analysis/ReadingGuide.tsx` | plain-language explanation of every number in the panel |
 | `analysis/FactorRelations.tsx` | correlation / beta / lead table for SPY, QQQ, VIX, oil, gasoline, rate |
 | `analysis/util.ts` | formatting helpers shared by the cards and tables (`pct`, `usd`, `span`, rule text, ...) |
+| `backtest/BacktestPage.tsx` | Backtests page: current-training line + training dates, settings, qualifying-decisions note, Overall / YTD / Per transaction blocks, by setup, rebound vs trend vs both (click a row to switch), trades; "Train now" when there is no training |
 
 ---
 
@@ -618,7 +628,38 @@ Daily, 5-year windows, Nov 2026; SPY, QQQ, AAPL, MSFT, NVDA, JPM; fixed levels:
 
 ---
 
-## 9. Next phase
+## 9. Backtests page
+
+Opened from **Backtests** in the header (`#/backtests`). It runs scenarios on the **current training** (the last
+Find entry points run, or **Train now** on the chart as shown); nothing is retrained.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Decisions | 30 (1–100) | the most recent N BUY decisions are simulated |
+| Strategy | Both | BUY setup: rebound, trend or both |
+| Buy when P ≥ | 60% | the walk-forward model's out-of-sample P on that bar (replaces the model's own threshold) |
+| Each BUY | $100 | $100 worth or 1 share per BUY |
+| Sell | next SELL | sell everything at the training's next SELL decision, or also each lot at its own profit-take / stop-loss |
+
+How decisions are chosen (`quant/backtest.py`): every bar of the model-check window that was in the chosen setup with
+P ≥ the threshold, at most one per cooldown (5 bars on Daily, one hour intraday), the most recent N. The page says how
+many qualify; with a high threshold there can be fewer than N (SPY Daily, Nov 2026: about 10–12 at 60% in 5 years). A
+longer training range (MAX) gives more candidates. SELL decisions are the training's (interim top AND model).
+
+Results (`quant/portfolio.py`), for the chosen sell rule:
+
+| Block | Contents |
+|---|---|
+| Overall | total P&L and return on $ invested, win rate, lots (sold / held), realized / still held, max money at work, the same BUYs never sold, one lot at the first BUY held |
+| YTD | P&L since Jan 1 of the last bar's year (lots held over the year end count from the previous year's last close), return on the money at work this year, lots held / sold this year, win rate, average return per sold lot |
+| Per transaction | average return per trade, average gain of winners and loss of losers (% and $), best / worst, average holding time |
+| By setup | the same per rebound / trend lots |
+| Rebound vs trend vs both | the three strategies with the same N, threshold and lot size (click a row to show it) |
+| Trades | every lot: bought, setup, P, size, prices, exit reason, holding time, P&L, return |
+
+Training runs live in server memory (the last 30); after a server restart the page asks to retrain.
+
+## 10. Next phase
 
 Suggested placement for more models / strategies:
 
@@ -627,4 +668,4 @@ Suggested placement for more models / strategies:
 | `backend/app/quant/` | new pure modules (features, labels, models) |
 | `backend/app/services/` | orchestration (fetch → features → model → result) |
 | `backend/app/api/routes/` | endpoints exposing results |
-| frontend | new hooks + components; the "Signals" / "Model" tabs in SubNav are placeholders for them |
+| frontend | new hooks + components; a new page can get its own tab in `layout/SubNav.tsx` |
