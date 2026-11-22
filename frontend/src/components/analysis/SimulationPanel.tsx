@@ -1,19 +1,28 @@
 /**
- * Simulation over the most recent decisions (computed by the server, quant/portfolio.py):
- * every BUY buys a lot - $100 worth or 1 share (switch, default $100) - also while already holding; the next SELL
- * decision sells everything held (variant "with_bracket": each lot is also sold at its own profit-take / stop-loss
- * if that comes first). Win rate and P&L are per lot, split by the setup of the BUY (rebound / trend).
+ * Simulation over the most recent decisions (computed by the server, quant/portfolio.py), two strategies:
+ *   sell-signal strategy        BUYs from the sell-signal BUY model ("BUY S"); every BUY adds a lot ($100 or 1 share,
+ *                               also while holding); the next SELL decision sells everything held
+ *   profit-take / stop-loss     BUYs from the profit-take / stop-loss BUY model; each lot is also sold at its own
+ *                               profit-take / stop-loss / time limit if that comes before the next SELL
+ * Win rate and P&L are per lot, split by the setup of the BUY (rebound / trend).
  */
 import { SETUP_LABEL } from "../../chart/markers";
 import { price } from "../../lib/format";
-import type { SetupName, SimBook, SimRun, SimSizing, SimTally, SimTrade, Simulation } from "../../types/api";
+import type { SetupName, SimRun, SimSizing, SimStrategy, SimTally, SimTrade, Simulation } from "../../types/api";
 import { dirCls, pct, span, usd } from "./util";
 
 export type SimVariant = "sell_only" | "with_bracket";
 
 export const SIM_LABEL: Record<SimVariant, string> = {
-  sell_only: "Sell everything at the next SELL decision",
-  with_bracket: "… or each lot earlier at its profit-take / stop-loss / time limit",
+  sell_only: "Sell-signal strategy",
+  with_bracket: "Profit-take / stop-loss strategy",
+};
+
+/** What each strategy does. */
+export const SIM_RULE: Record<SimVariant, string> = {
+  sell_only: "BUY S decisions (the sell-signal BUY model) · every BUY adds a lot · the next SELL sells everything",
+  with_bracket: "BUY decisions (the profit-take / stop-loss BUY model) · each lot sold at its profit-take, stop-loss or "
+    + "time limit, or at the next SELL if that comes first",
 };
 
 export const SIZING_LABEL: Record<SimSizing, string> = { usd: "$100 per BUY", share: "1 share per BUY" };
@@ -26,7 +35,7 @@ const setupName = (s: SetupName) => (s ? SETUP_LABEL[s as Exclude<SetupName, "">
 const dollars = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 const money = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-function Summary({ run, book }: { run: SimRun; book: SimBook }) {
+function Summary({ run }: { run: SimStrategy }) {
   const s = run.summary;
   return (
     <div className="ta-stats sim-stats">
@@ -48,7 +57,9 @@ function Summary({ run, book }: { run: SimRun; book: SimBook }) {
         {s.return_pct !== null && <small className={dirCls(s.return_pct)}>{s.return_pct > 0 ? "+" : ""}{s.return_pct.toFixed(1)}%</small>}
       </div>
       <div title="The same BUYs, never sold (valued at the last close)">
-        <label>Same BUYs, never sold</label><b className={dirCls(book.hold_all.pnl)}>{usd(book.hold_all.pnl)}</b>
+        <label>Same BUYs, never sold</label><b className={dirCls(run.hold_all.pnl)}>{usd(run.hold_all.pnl)}</b>{" "}
+        <small>{run.hold_all.shares.toLocaleString(undefined, { maximumFractionDigits: 3 })} sh · cost{" "}
+          ${run.hold_all.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}</small>
       </div>
     </div>
   );
@@ -105,16 +116,16 @@ export function SimulationPanel({ sim, variant, onVariant, sizing, onSizing, bar
   const book = sim[sizing];
   const run = book[variant];
   const other: SimVariant = variant === "sell_only" ? "with_bracket" : "sell_only";
-  const o = book[other].summary;
-  const s = run.summary;
+  const o = book[other]?.summary ?? null;
   const lot = sizing === "usd" ? "a $100 lot" : "1 share";
   return (
     <div className="ta-dec-table sim-panel">
       <div className="ta-dec-h">
-        <b>{SIZING_LABEL[sizing]} · simulation</b>
+        <b>{SIM_LABEL[variant]} · {SIZING_LABEL[sizing]} · simulation</b>
         <span className="ta-dec-sub">
-          {sim.start_date} → {sim.end_date} · the {sim.buys} most recent BUYs and the {sim.sells} SELLs after the first one ·
-          every BUY buys {lot} (also while holding) · a SELL sells everything held · before costs
+          {run ? <>{run.start_date} → {sim.end_date} · the {run.buys} most recent BUYs and the {run.sells} SELLs after the
+            first one · </> : null}
+          {SIM_RULE[variant]} · every BUY buys {lot} · before costs
         </span>
       </div>
       <div className="sim-body">
@@ -130,7 +141,21 @@ export function SimulationPanel({ sim, variant, onVariant, sizing, onSizing, bar
             ))}
           </div>
         </div>
-        <Summary run={run} book={book} />
+        {run ? <SimBody run={run} other={other} o={o} sizing={sizing} barUnit={barUnit} />
+          : <p className="ta-note">No BUY decisions for this strategy in the analysed window.</p>}
+      </div>
+      {run && run.trades.length > 0 && <Ledger run={run} sizing={sizing} barUnit={barUnit} />}
+    </div>
+  );
+}
+
+function SimBody({ run, other, o, sizing, barUnit }: {
+  run: SimStrategy; other: SimVariant; o: SimRun["summary"] | null; sizing: SimSizing; barUnit: string;
+}) {
+  const s = run.summary;
+  return (
+    <>
+        <Summary run={run} />
         <div className="ta-section">Win rate and P&amp;L by BUY setup</div>
         <BySetup run={run} />
         <p className="ta-note">
@@ -138,12 +163,16 @@ export function SimulationPanel({ sim, variant, onVariant, sizing, onSizing, bar
           {s.sells_used} SELL decision{s.sells_used === 1 ? "" : "s"} sold lots
           {s.avg_bars !== null && <>; sold lots were held {span(Math.round(s.avg_bars), barUnit)} on average</>}
           {s.best_pnl !== null && <> (best {usd(s.best_pnl)}, worst {usd(s.worst_pnl)})</>}.
-          {" "}{variant === "sell_only" ? "With profit-take / stop-loss exits" : "Selling only at SELL decisions"}: total{" "}
-          <b className={dirCls(o.total_pnl)}>{usd(o.total_pnl)}</b>, win rate {pct(o.win_rate)}.
-          {" "}{sizing === "usd" ? "$100" : "1 share"} bought at the first BUY and held: {usd(book.buy_hold.pnl)}.
+          {o && <>{" "}{SIM_LABEL[other]} instead: total <b className={dirCls(o.total_pnl)}>{usd(o.total_pnl)}</b>, win
+            rate {pct(o.win_rate)}.</>}
+          {" "}{sizing === "usd" ? "$100" : "1 share"} bought at the first BUY and held: {usd(run.buy_hold.pnl)}.
         </p>
-      </div>
-      {run.trades.length > 0 && (
+    </>
+  );
+}
+
+function Ledger({ run, sizing, barUnit }: { run: SimStrategy; sizing: SimSizing; barUnit: string }) {
+  return (
         <div className="table-scroll">
           <table className="grid">
             <thead>
@@ -172,7 +201,5 @@ export function SimulationPanel({ sim, variant, onVariant, sizing, onSizing, bar
             </tbody>
           </table>
         </div>
-      )}
-    </div>
   );
 }

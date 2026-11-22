@@ -32,7 +32,7 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     return (b.mode as string) === "dynamic" ? { ...b, mode: "optimal" } : b; // the old per-decision mode was replaced
   });
   const [visible, setVisible] = useState<MarkerVisibility>({
-    short: true, tp_short: true, exits: true,
+    short: true, accum: true, tp_short: true, exits: true,
   });
   const ctrl = useRef<AbortController | null>(null);
 
@@ -61,7 +61,7 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
       setResult(r);
       setQuery(inputs);
       // BUY and SELL markers are both drawn by default (the SELL card warns when that model has no reliable edge).
-      setVisible({ short: true, exits: true, tp_short: true });
+      setVisible({ short: true, accum: true, exits: true, tp_short: true });
     } catch (e) {
       if (!isAbort(e)) onError(e as ApiError);
     } finally {

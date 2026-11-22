@@ -23,12 +23,13 @@ TIMEFRAME_MINUTES = {
 }
 RANGE_DEFAULT_TF = {
     "1D": "1Min", "5D": "5Min", "1M": "1Hour", "3M": "1Day", "6M": "1Day",
-    "YTD": "1Day", "1Y": "1Day", "5Y": "1Week", "MAX": "1Week",
+    "YTD": "1Day", "1Y": "1Day", "3Y": "1Day", "5Y": "1Week", "10Y": "1Week", "MAX": "1Week",
 }
 SESSION_RANGES = {"1D": 1, "5D": 5}  # ranges measured in trading sessions, not calendar time
 RANGE_OFFSETS = {
     "1M": pd.DateOffset(months=1), "3M": pd.DateOffset(months=3), "6M": pd.DateOffset(months=6),
-    "1Y": pd.DateOffset(years=1), "5Y": pd.DateOffset(years=5),
+    "1Y": pd.DateOffset(years=1), "3Y": pd.DateOffset(years=3), "5Y": pd.DateOffset(years=5),
+    "10Y": pd.DateOffset(years=10),
 }
 MAX_BARS = 20000
 REGULAR_OPEN_MIN, REGULAR_CLOSE_MIN = 9 * 60 + 30, 16 * 60

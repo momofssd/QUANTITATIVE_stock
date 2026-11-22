@@ -9,7 +9,8 @@ export const signedPct = (v: number | null | undefined, d = 2) =>
 
 /** "+$12.40" / "−$3.10". */
 export const usd = (v: number | null | undefined) =>
-  v === null || v === undefined ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
+  v === null || v === undefined ? "—"
+    : `${v > 0 ? "+" : v < 0 ? "−" : ""}$${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export const dirCls =(v: number | null | undefined) =>
   v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down";
@@ -34,6 +35,9 @@ export function rule(t: TargetResult, unit: string): string {
   const window = s.horizon_mode === "sessions"
     ? `${s.horizon} trading sessions`
     : unit.endsWith("bars") ? `${s.horizon} × ${unit}` : `${s.horizon} ${unit}`;
+  if (s.label_rule === "next_sell") {
+    return "Sold at a profit at the next SELL decision (held until then - no profit-take / stop-loss)";
+  }
   if (s.key === "short") {
     if (s.bracket === "optimal") {
       return `Profit-take +${s.target_atr}× / stop-loss −${s.stop_atr}× ${atrName} (optimized by backtested profit) within ${window}`;

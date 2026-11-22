@@ -38,6 +38,9 @@ class TargetSpec:
     # BUY levels: "fixed" = target_atr / stop_atr x ATR; "optimal" = the multiples chosen by backtested profit,
     # walk-forward (quant/optimize.py; target_atr / stop_atr then show the combination in use now).
     bracket: str = "fixed"
+    # How bars are labelled: "bracket" = target before stop within the horizon (triple barrier);
+    # "next_sell" = profit at the next SELL decision of the `exit_with` target (quant/accum.py).
+    label_rule: str = "bracket"
 
     @property
     def sign(self) -> int:
@@ -65,7 +68,12 @@ SHORT = TargetSpec("short", "BUY - short-term entry", "entry", "up", horizon=HOL
 # "interim top" setup (bullish momentum easing).
 TP_SHORT = TargetSpec("tp_short", "SELL - take profit", "take_profit", "down", horizon=5, target_atr=1.5,
                       stop_atr=1.0, cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily")
-TARGETS = (SHORT, TP_SHORT)
+# BUY for the sell-signal strategy (every BUY adds a lot, the next SELL sells everything): justified when the lot is
+# sold at a profit at the next SELL decision. No profit-take / stop-loss / time limit (quant/accum.py).
+ACCUM = TargetSpec("accum", "BUY - sell-signal strategy", "entry", "up", horizon=0, target_atr=0.0, stop_atr=0.0,
+                   cooldown=5, model="hgb", horizon_mode="sessions", atr_basis="daily", exit_with="tp_short",
+                   label_rule="next_sell")
+TARGETS = (SHORT, ACCUM, TP_SHORT)
 
 # outcome codes
 PENDING, TARGET, STOP, EXPIRED = "pending", "target", "stop", "expired"

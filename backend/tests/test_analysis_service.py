@@ -101,7 +101,7 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
     for key, t in r["targets"].items():         # every decision explains itself
         for s in t["signals"]:
             w = s["why"]
-            assert set(w["setups"]) == ({"rebound", "trend"} if key == "short" else {"top"})
+            assert set(w["setups"]) == ({"top"} if key == "tp_short" else {"rebound", "trend"})
             assert w["setups"].get(s["setup"], {"active": True})["active"]       # its setup held on that bar
             assert w["factors"] and {f["group"] for f in w["factors"]} <= set(GROUPS.values())
             assert any(v["label"] == "RSI(14)" for v in w["values"])
@@ -111,15 +111,19 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
     # default thresholds = the model's own: the backtest reproduces the analysis' BUY and SELL decisions exactly
     default = qbt.backtest(run, n=qbt.MAX_DECISIONS)
     buy_dates = [s["date"] for s in r["targets"]["short"]["signals"]][-qbt.MAX_DECISIONS:]
-    if default["result"]:
-        assert [t["buy_date"] for t in default["result"]["sell_only"]["trades"]][::-1] == buy_dates
+    if default["variants"]["with_bracket"]["result"]:
+        assert [t["buy_date"] for t in default["variants"]["with_bracket"]["result"]["trades"]][::-1] == buy_dates
+    acc_dates = [s["date"] for s in r["targets"]["accum"]["signals"]][-qbt.MAX_DECISIONS:]
+    if default["variants"]["sell_only"]["result"]:
+        assert [t["buy_date"] for t in default["variants"]["sell_only"]["result"]["trades"]][::-1] == acc_dates
     assert default["sell_decisions"] == len(r["targets"]["tp_short"]["signals"])
     out = qbt.backtest(run, n=10, setups="both", min_prob=0.0, sizing="usd")
-    if out["result"]:
-        res = out["result"]
-        assert res["decisions"] == min(10, out["pool"]["both"]["qualified"])
-        sm = res["sell_only"]["summary"]
+    if out["variants"]["sell_only"]["result"]:
+        res = out["variants"]["sell_only"]["result"]
+        assert res["decisions"] == min(10, out["variants"]["sell_only"]["pool"]["both"]["qualified"])
+        sm = res["summary"]
         assert sm["lots"] == res["decisions"] and "ytd" in sm
+    assert len(r["k_momentum"]) == svc.MOMENTUM_BARS and r["k_momentum"][-1]["rsi"] is not None
     tr = r["training"]
     assert tr["data"]["bars"] == len(df) and tr["train_bars"] == svc.TRAIN_BARS
     for key in ("short", "tp_short"):
@@ -129,7 +133,7 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
         if t["first"]:
             f = t["first"]
             assert f["end"] < f["predicts_from"]                                   # no look-ahead
-            if key == "tp_short" or bracket == "fixed":   # the optimizer starts WARMUP bars earlier on purpose
+            if key == "accum" or (key == "short" and bracket == "fixed"):  # SELL / optimizer start earlier
                 assert f["predicts_from"] >= r["window"]["start"]
             assert f["rows"] >= tr["min_train"]
     pj = r["projection"]
@@ -143,17 +147,34 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
         if pj["buy"] and not pj["buy"]["now"]:
             assert pj["buy"]["target"] > pj["buy"]["price"] > pj["buy"]["stop"]
     sim = r["simulation"]
+    # sell-signal BUY model: labelled by profit at the next SELL decision, traded until that SELL
+    acc = r["targets"]["accum"]
+    assert acc["spec"]["label_rule"] == "next_sell" and "proxy_until" in acc
+    # BUY S starts learning about as early as the other models (the setup stands in for SELL before the SELL model)
+    tr_t = r["training"]["targets"]
+    if tr_t["accum"]["first"] and tr_t["tp_short"]["first"]:
+        assert tr_t["accum"]["first"]["predicts_from"] <= r["window"]["end"]
+    sell_dates = {s["date"] for s in r["targets"]["tp_short"]["signals"]}
+    for s in acc["signals"]:
+        assert s["target"] is None and s["stop"] is None
+        if s["trade"]["status"] == "closed":
+            assert s["trade"]["reason"] == "sell decision" and s["trade"]["exit_date"] in sell_dates
+            assert s["outcome"] == ("target" if s["trade"]["return_pct"] > 0 else "stop")
     if buys:
-        assert sim["buys"] == min(len(buys), 30) and sim["start_date"] == buys[-sim["buys"]]["date"]
+        wb = sim["usd"]["with_bracket"]
+        assert wb["buys"] == min(len(buys), 30) and wb["start_date"] == buys[-wb["buys"]]["date"]
         for sz, v in [(sz, v) for sz in ("usd", "share") for v in ("sell_only", "with_bracket")]:
+            if sim[sz][v] is None:
+                continue
             sm = sim[sz][v]["summary"]
-            assert sm["lots"] == sim["buys"] and sm["closed"] + sm["open"] == sm["lots"]
+            assert sm["lots"] == sim[sz][v]["buys"] and sm["closed"] + sm["open"] == sm["lots"]
             assert sum(t["lots"] for t in sim[sz][v]["by_setup"].values()) == sm["lots"]  # every BUY has a setup
             assert sm["total_pnl"] == pytest.approx(sum(t["pnl"] for t in sim[sz][v]["trades"]), abs=0.05)
-            assert all(t["buy_time"] >= sim["start_time"] for t in sim[sz][v]["trades"])
+            assert all(t["buy_time"] >= sim[sz][v]["start_time"] for t in sim[sz][v]["trades"])
     assert r["timeframe"] == tf and r["window"]["bars"] >= min(svc.MIN_EVAL_BARS, len(df) - 1)
     assert {f["factor"] for f in r["relations"]} == set(FACTORS)
-    assert set(r["targets"]) == {"short", "tp_short"}
+    assert set(r["targets"]) == {"short", "accum", "tp_short"}
+    assert r["window"]["start_time"] <= r["range_window"]["start_time"]   # the trained window covers the range
     rw = r["range_window"]
     assert 0 < rw["bars"] <= r["window"]["bars"]
     for t in r["targets"].values():
@@ -166,10 +187,15 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
         assert t["spec"]["key"] == key
         assert {"reliable", "verdict", "base_rate", "auc", "signals", "hit_rate"} <= set(t["stats"])
         assert t["current"] is not None and 0 <= t["current"]["prob"] <= 1
+        rec = t["current"]["recent"]          # momentum: today's model on the last K lines, ending at the current one
+        assert len(rec) == svc.MOMENTUM_BARS and rec[-1]["date"] == t["current"]["date"]
+        assert rec[-1]["prob"] == t["current"]["prob"]
         times = [s["time"] for s in t["signals"]]
         assert times == sorted(times) and set(times) <= bar_times   # markers land on the chart's bars
         up = t["spec"]["direction"] == "up"
         for s in t["signals"]:
+            if t["spec"]["label_rule"] == "next_sell":    # sell-signal strategy: no profit-take / stop-loss
+                continue
             assert (s["target"] > s["entry"] > s["stop"]) if up else (s["target"] < s["entry"] < s["stop"])
             if t["spec"]["kind"] == "entry":
                 assert s["trade"]["status"] in ("closed", "open")

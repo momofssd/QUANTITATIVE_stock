@@ -37,6 +37,9 @@ export const NO_DECISION_COLOR = "#9a9a9a";
 export const OUTCOME_COLOR: Record<Outcome, string> = { target: GREEN, stop: RED, expired: RED, pending: BLUE };
 
 export function outcomeLabel(spec: TargetSpec, o: Outcome): string {
+  if (spec.label_rule === "next_sell") {
+    return { target: "Profit at next SELL", stop: "Loss at next SELL", expired: "Expired", pending: "Waiting for a SELL" }[o];
+  }
   if (spec.kind === "take_profit") {
     return { target: "Pullback came", stop: "Kept rising", expired: "Expired", pending: "Open" }[o];
   }
@@ -47,7 +50,7 @@ export function outcomeLabel(spec: TargetSpec, o: Outcome): string {
 
 export const EXIT_LABEL: Record<ExitReason, string> = {
   target: "Profit-take", "trailing stop": "Trailing stop", "take-profit signal": "SELL signal",
-  "time limit": "Time limit", stop: "Stop-loss",
+  "time limit": "Time limit", stop: "Stop-loss", "sell decision": "SELL decision",
 };
 
 export const SETUP_LABEL: Record<Exclude<SetupName, "">, string> = {
@@ -57,6 +60,7 @@ export const SETUP_LABEL: Record<Exclude<SetupName, "">, string> = {
 /** On-chart label per target. */
 export const MARK: Record<TargetKey, { text: string; size: number }> = {
   short: { text: "BUY", size: 1 },
+  accum: { text: "BUY S", size: 1 },   // BUY for the sell-signal strategy
   tp_short: { text: "SELL", size: 1 },
 };
 
@@ -88,9 +92,9 @@ export function latestDecisions(r: AnalysisResult): Decision[] {
   });
 }
 
-/** viewStart = chart time where the chart's current view begins (bars payload); markers before it are not drawn.
- *  Without it, the training's own range is used (signal.in_range). */
-export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility, viewStart?: number): EntryMarker[] {
+/** Every decision of the analysed window is drawn (the chart only shows those on loaded bars): scroll back or
+ *  widen the range to see older ones. */
+export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMarker[] {
   const out: EntryMarker[] = [];
   const decided = new Map(latestDecisions(r).map((d) => [d.key, d]));
   (Object.keys(r.targets) as TargetKey[]).forEach((key) => {
@@ -102,19 +106,19 @@ export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility, viewStart
       // Current K line: always show the decision; grey "–" when there is no BUY / SELL.
       out.push(d.active
         ? { time: d.time, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
-          color: DECISION_COLOR, text: d.action, size: 1.4 }
+          color: DECISION_COLOR, text: MARK[key].text, size: 1.4 }
         : { time: d.time, position: up ? "belowBar" : "aboveBar", shape: "circle",
-          color: NO_DECISION_COLOR, text: up ? "BUY –" : "SELL –", size: 0.6 });
+          color: NO_DECISION_COLOR, text: `${MARK[key].text} –`, size: 0.6 });
     }
     for (const s of t.signals) {
-      if (viewStart !== undefined ? s.time < viewStart : !s.in_range) continue; // only what is in view
       if (d && s.time === d.time) continue; // the current-K marker above replaces it
       out.push({
         time: s.time, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
         color: OUTCOME_COLOR[s.outcome], ...MARK[key],
       });
       const tr = s.trade;
-      if (vis.exits && tr?.status === "closed" && tr.exit_time !== undefined) {
+      // exit dots for the profit-take / stop-loss BUYs (sell-signal BUYs exit on the SELL markers themselves)
+      if (vis.exits && t.spec.label_rule !== "next_sell" && tr?.status === "closed" && tr.exit_time !== undefined) {
         out.push({
           time: tr.exit_time, position: "aboveBar", shape: "circle", size: 0.6,
           color: tr.return_pct > 0 ? GREEN : RED, text: fmtPct(tr.return_pct),

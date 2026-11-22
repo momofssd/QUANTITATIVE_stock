@@ -13,6 +13,14 @@ export function ReadingGuide({ buyHold, sellHold }: { buyHold: number; sellHold:
           machine-learning model expects the price to reach the profit-take before the stop-loss within {buyHold} trading
           days - a BUY can be held up to {buyHold} sessions.
         </dd>
+        <dt>BUY S (sell-signal strategy)</dt>
+        <dd>
+          A second, separately trained BUY model for the sell-signal strategy, where every BUY adds a lot and the next SELL
+          sells everything - no profit-take or stop-loss. It learns whether a lot bought on a bar was sold at a{" "}
+          <b>profit at the next SELL decision</b> (the SELL model's own decisions, made without hindsight), and needs a
+          rebound or trend setup too. The sell-signal simulation and backtest buy on BUY S; the profit-take / stop-loss
+          ones on BUY.
+        </dd>
         <dt>SELL (take profit)</dt>
         <dd>
           The bar is in an <b>Interim top</b> setup (price extended and bullish momentum fading - MACD histogram falling
@@ -57,6 +65,13 @@ export function ReadingGuide({ buyHold, sellHold }: { buyHold: number; sellHold:
           What happened if you had bought at the BUY and sold at the first of: the profit-take, the stop-loss, a SELL signal
           while in profit, or the close after {buyHold} trading sessions. <b>Any-bar entry</b> applies the same exits to
           every bar.
+        </dd>
+        <dt>Momentum vs previous K lines</dt>
+        <dd>
+          For BUY, BUY S and SELL: the model's probability on each of the last 10 K lines (all scored by today's model, so
+          the change comes from the price action, not from a retrain) against its threshold - rising toward the threshold
+          means the K lines are moving toward that decision. The headline compares the BUY models' change over the last
+          5 K lines with the SELL model's: toward BUY, toward SELL, or no clear shift. A BUY / SELL still needs its setup.
         </dd>
         <dt>Projection (current K line)</dt>
         <dd>

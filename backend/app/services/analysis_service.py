@@ -29,10 +29,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
+from threadpoolctl import threadpool_limits
 
 from ..alpaca_api import feeds
 from ..core.errors import ApiError
 from ..core.timeutil import EARLIEST, ET, et_epoch, iso, now_et
+from ..quant import accum as qa
 from ..quant import backtest as qbt
 from ..quant import brackets as qb
 from ..quant import explain as qe
@@ -57,6 +59,7 @@ WARMUP_BARS = 260        # bars before the training window so 200-bar / 52-week 
 MIN_RETRAIN_EVERY = 21   # bars between re-trainings ...
 MAX_FOLDS = 60           # ... widened so no more than this many re-trainings per target
 IMPORTANCE_BARS = 252    # last bars used to measure which factors matter
+MOMENTUM_BARS = 10       # K lines before (and incl.) the current one scored by today's models (momentum panel)
 RELATION_YEARS = 5
 MIN_BARS = 400
 CACHE_TTL = 600          # seconds
@@ -354,7 +357,14 @@ def _horizons(spec: TargetSpec, tf: str, session: pd.Series, et_naive: pd.Dateti
     return Horizons(end, complete, per_hour, "sessions", ordinal)  # at most one decision per hour
 
 
-def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFrame, factors: pd.DataFrame, *,
+def compute(*args, **kwargs) -> dict:
+    """The analysis. Single-threaded in this process: its many small fits / predictions only lose time to thread
+    start-up and to fighting for cores; the walk-forward folds run in parallel worker processes (quant/model.py)."""
+    with threadpool_limits(limits=1):
+        return _compute(*args, **kwargs)
+
+
+def _compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFrame, factors: pd.DataFrame, *,
             rng: str, tf: str, intraday: bool, display_start, display_end,
             tp_atr: float = SHORT.target_atr, sl_atr: float = SHORT.stop_atr, bracket: str = "fixed") -> dict:
     n = len(df)
@@ -373,22 +383,38 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
 
     setups = compute_setups(df)
     buy_names = buy_setup_names(setups)
-    setup_of = {"short": buy_names, "tp_short": np.where(setups["top"].to_numpy(), "top", "")}
+    setup_of = {"short": buy_names, "accum": buy_names, "tp_short": np.where(setups["top"].to_numpy(), "top", "")}
 
     r0, w0, w1 = eval_window(df.index, session, rng, display_start, display_end)
     step = max(MIN_RETRAIN_EVERY, math.ceil((w1 - w0) / MAX_FOLDS))
     specs = [dataclasses.replace(s, target_atr=tp_atr, stop_atr=sl_atr, bracket=bracket) if s.key == "short" else s
              for s in TARGETS]
 
-    # 1) labels + walk-forward probabilities for every target (entries and take-profits). An optimized BUY bracket
-    #    is fitted last: its trades need the SELL signals.
+    # 1) labels + walk-forward probabilities for every target. The SELL model first: the sell-signal BUY model learns
+    #    from its decisions and the BUY trades exit on them; an optimized BUY bracket last.
     fitted: dict[str, tuple] = {}
     steps: dict[str, int] = {}
     latest_for: dict[str, tuple] = {}   # labels / levels today's model uses when they differ from the composite
+    sell_bars: dict[str, np.ndarray] = {}   # SELL decision bars per take-profit target
+    proxy_until: dict[str, str | None] = {}  # sell-signal BUY model: setup stood in for SELL in labels until then
     optimization = None
-    for spec in sorted(specs, key=lambda sp: sp.bracket == "optimal"):
+    for spec in sorted(specs, key=lambda sp: (sp.kind == "entry", sp.bracket == "optimal")):
         a = day_atr if spec.atr_basis == "daily" else bar_atr
         hz = _horizons(spec, tf, session, et_naive)
+        if spec.label_rule == "next_sell":
+            # BUY for the sell-signal strategy: profit at the next SELL decision (quant/accum.py)
+            p_sell = fitted[spec.exit_with][5].prob
+            active_from = int(np.argmax(np.isfinite(p_sell))) if np.isfinite(p_sell).any() else n
+            # before the SELL model's first decision, its interim-top setup stands in for SELL (labels only)
+            label_sell = qa.label_sells(sell_bars[spec.exit_with], setup_of[spec.exit_with] != "",
+                                        fitted[spec.exit_with][1].cooldown, active_from)
+            label, resolved, outcome = qa.next_sell_labels(close, label_sell, 0)
+            proxy_until[spec.key] = stamps[active_from] if 0 < active_from < n else None
+            wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model,
+                                 keep=True)
+            fitted[spec.key] = (a, hz, label, resolved, outcome, wf, qa.no_levels(n))
+            steps[spec.key] = step
+            continue
         if spec.bracket == "optimal":
             # quant/optimize.py: one walk-forward retrain per profit-take x stop-loss combination; each block uses
             # the combination with the best profit over the trades closed before it.
@@ -404,9 +430,22 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         lv = qb.fixed_levels(close, a, spec.target_atr, spec.stop_atr, spec.sign)
         label, resolved, outcome = triple_barrier(high, low, close, a, spec, hz.end, hz.complete,
                                                   levels=(lv.target, lv.stop))
-        wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model, keep=True)
+        start, pre = w0, None
+        if spec.kind == "take_profit" and any(sp.label_rule == "next_sell" and sp.exit_with == spec.key for sp in specs):
+            # The sell-signal BUY model learns from these SELL decisions over its own training window, so this
+            # walk-forward also covers TRAIN_BARS before the window, retrained 3x less often there (the window's
+            # folds - and its decisions - stay the same).
+            pre = 3 * step
+            start = w0 - min(math.ceil(TRAIN_BARS / pre), w0 // pre) * pre
+        wf = qm.walk_forward(X, label, resolved, start=w0, window=TRAIN_BARS, step=step, kind=spec.model, keep=True,
+                             pre_start=start if pre else None, pre_step=pre)
         fitted[spec.key] = (a, hz, label, resolved, outcome, wf, lv)
         steps[spec.key] = step
+        if spec.kind == "take_profit":   # its decisions (same rule as the analysis), before / in / after the window
+            sell_bars[spec.key] = np.array(
+                [i for lo_, hi_ in ((start, w0), (w0, w1), (w1, n))
+                 for i in qo.signal_bars(wf.prob, wf.threshold, setup_of[spec.key], lo_, hi_, hz.cooldown)],
+                dtype=np.int64)
     if optimization:  # the BUY spec shows the combination in use now
         specs = [dataclasses.replace(sp, target_atr=optimization["current"]["tp"],
                                      stop_atr=optimization["current"]["sl"]) if sp.bracket == "optimal" else sp
@@ -416,6 +455,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
 
     targets = {}
     now_models: dict[str, qp.Side] = {}
+    k_m = min(MOMENTUM_BARS, n)
     for spec in specs:
         a, hz, label, resolved, outcome, wf, lv = fitted[spec.key]
         signals = _signals(spec, hz.cooldown, stamps, times, close, a, wf, resolved, outcome, w0, w1,
@@ -433,7 +473,17 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             return int(max(0, i + spec.horizon - (n - 1)))
 
         trades = None
-        if spec.kind == "entry":
+        if spec.kind == "entry" and spec.label_rule == "next_sell":
+            # sell-signal strategy: each BUY is held until the next SELL decision (no profit-take / stop-loss)
+            sb = sell_bars[spec.exit_with]
+            sims = []
+            for sgl in signals:
+                t = qa.trade(sgl["i"], close, a[sgl["i"]], sb)
+                sgl["trade"] = _trade_view(t, stamps, times, None, hz.unit)
+                sims.append(t)
+            every_idx = [i for i in range(w0, min(w1, n - 1)) if np.isfinite(a[i]) and a[i] > 0]
+            every = [qa.trade(i, close, a[i], sb) for i in every_idx]
+        elif spec.kind == "entry":
             tps = tp_signal[spec.exit_with] if spec.exit_with else None
             sims = []
             for sgl in signals:
@@ -453,6 +503,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             every_idx = [i for i in range(w0, min(w1, n - 1)) if np.isfinite(a[i]) and a[i] > 0]
             every = [simulate(i, open_, high, low, close, a[i], spec, tps, int(hz.end[i]), bool(hz.complete[i]),
                               lv.at(i)) for i in every_idx]
+        if spec.kind == "entry":
             trades = {
                 "signals": summarize(sims),
                 "every_day": summarize(every),
@@ -464,7 +515,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                 "rules": {"stop_atr": spec.stop_atr, "target_atr": spec.target_atr,
                           "trail_after_atr": spec.trail_after_atr, "trail_atr": spec.trail_atr,
                           "horizon": spec.horizon, "horizon_mode": spec.horizon_mode, "atr_basis": spec.atr_basis,
-                          "exit_with": spec.exit_with, "bracket": spec.bracket},
+                          "exit_with": spec.exit_with, "bracket": spec.bracket, "label_rule": spec.label_rule},
             }
             if spec.bracket == "optimal" and optimization is not None:
                 # the walk-forward optimized strategy itself, over the same window as the grid
@@ -496,10 +547,16 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
                 **_level_view(lv_now, n - 1, close, a),
                 "chase_limit": _num(close[-1] + CHASE_ATR * a[-1], 2) if spec.kind == "entry" else None,
                 "horizon_days": spec.horizon,
+                # momentum: today's model on the last K lines (same model, so the change is the K lines', not a
+                # retrain's) - is P moving toward or away from the threshold?
+                "recent": [{"date": stamps[i], "prob": _num(float(pr), 3), "setup": str(setup_of[spec.key][i]),
+                            "signal": bool(setup_of[spec.key][i]) and bool(pr >= thr_now)}
+                           for i, pr in zip(range(n - k_m, n), latest.predict_proba(X[n - k_m:])[:, 1])],
             }
         open_trade = next((s for s in reversed(signals) if s.get("trade", {}).get("status") == "open"), None)
         targets[spec.key] = {
             "spec": spec.to_dict(),
+            "proxy_until": proxy_until.get(spec.key),
             "current": current,
             "signals": signals,
             "stats": _stats(wf, label, signals, w0, w1, setup_of[spec.key]),
@@ -516,7 +573,9 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         return {"i": s["i"], "time": s["time"], "date": s["date"], "price": s["entry"], "setup": s["setup"],
                 "exit": s.get("_exit")}
     simulation = portfolio.simulate_decisions(
-        [event(s) for s in targets["short"]["signals"]], [event(s) for s in targets["tp_short"]["signals"]],
+        {"sell_only": [event(s) for s in targets["accum"]["signals"]],
+         "with_bracket": [event(s) for s in targets["short"]["signals"]]},
+        [event(s) for s in targets["tp_short"]["signals"]],
         {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])})
     # Backtests page: every BUY-setup bar of the model-check window with its out-of-sample P, the model's own
     # threshold there and the first profit-take / stop-loss / time-limit exit; every interim-top bar with the SELL
@@ -536,6 +595,13 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
             "exit": ({"i": h["exit_index"], "time": int(times[h["exit_index"]]), "date": stamps[h["exit_index"]],
                       "price": h["price"], "reason": h["reason"]} if h["status"] == "closed" else None),
         })
+    wf_a = fitted["accum"][5]
+    accum_candidates = [
+        {"i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i]), "setup": str(buy_names[i]),
+         "prob": float(wf_a.prob[i]), "threshold": float(wf_a.threshold[i]), "exit": None}
+        for i in range(w0, w1)
+        if buy_names[i] and np.isfinite(wf_a.prob[i]) and np.isfinite(wf_a.threshold[i])
+    ]
     wf_s, hz_s = fitted["tp_short"][5], fitted["tp_short"][1]
     sell_candidates = [
         {"i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i]),
@@ -546,7 +612,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
     year = int(et_naive[-1].year)
     ys = int(np.argmax(et_naive.year == year))
     backtest_run = {
-        "candidates": candidates, "cooldown": int(hz_b.cooldown),
+        "candidates": candidates, "cooldown": int(hz_b.cooldown), "accum_candidates": accum_candidates,
         "sell_candidates": sell_candidates, "sell_cooldown": int(hz_s.cooldown),
         "last": {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])},
         "year_start": {"i": ys, "date": f"{year}-01-01", "prev_close": float(close[ys - 1]) if ys > 0 else None},
@@ -610,7 +676,7 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         "simulation": simulation,
         "projection": proj,
         "range_window": {"start": stamps[r0], "end": stamps[w1 - 1], "bars": w1 - r0, "start_time": int(times[r0])},
-        "window": {"start": stamps[w0], "end": stamps[w1 - 1], "bars": w1 - w0,
+        "window": {"start": stamps[w0], "end": stamps[w1 - 1], "bars": w1 - w0, "start_time": int(times[w0]),
                    "train_bars": TRAIN_BARS, "retrain_every": step, "years": RELATION_YEARS},
         "method": {
             "model": "Gradient-boosted trees (scikit-learn HistGradientBoostingClassifier)",
@@ -629,7 +695,12 @@ def compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFra
         "sources": {"stock": "Alpaca bars", "factors": "Yahoo Finance",
                     "factor_tickers": {k: t for k, (t, _) in yahoo.FACTORS.items()}},
         "targets": targets,
-        "setups_now": explain(setups, n - 1),   # which setup conditions hold on the current K line
+        "setups_now": explain(setups, n - 1),
+        # price momentum of the last K lines (RSI, MACD histogram in ATR) for the momentum panel
+        "k_momentum": [{"date": stamps[i], "close": _num(close[i], 2),
+                        "rsi": _num(X[i, names.index("rsi_14")], 1) if "rsi_14" in names else None,
+                        "macd_hist_atr": _num(X[i, names.index("macd_hist_atr")], 3) if "macd_hist_atr" in names else None}
+                       for i in range(n - k_m, n)],   # which setup conditions hold on the current K line
         "chase_atr": CHASE_ATR,
         "relations": factor_relations(daily["close"], factors, rel_start),
     }

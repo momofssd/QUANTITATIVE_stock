@@ -17,8 +17,9 @@ import numpy as np
 from .targets import TargetSpec
 
 STOP, TRAIL, TARGET, TP_SIGNAL, TIME = "stop", "trailing stop", "target", "take-profit signal", "time limit"
+SELL_DECISION = "sell decision"   # sell-signal strategy: sold at the next SELL decision (quant/accum.py)
 _NEVER = 1 << 62
-REASONS = (TARGET, TRAIL, TP_SIGNAL, TIME, STOP)
+REASONS = (TARGET, TRAIL, TP_SIGNAL, SELL_DECISION, TIME, STOP)
 
 
 def simulate(i: int, open_, high, low, close, atr_entry: float, spec: TargetSpec, tp_signal: np.ndarray | None,

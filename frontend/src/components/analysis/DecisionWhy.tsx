@@ -30,7 +30,9 @@ function Checks({ name, s, fired }: { name: string; s: SetupExplain; fired: bool
 const fmt = (v: { value: number; unit: string; digits: number; signed: boolean }) =>
   `${v.signed && v.value > 0 ? "+" : ""}${v.value.toFixed(v.digits)}${v.unit === "ATR" ? " ATR" : v.unit}`;
 
-export function DecisionWhy({ e, isBuy, barWord }: { e: EntrySignal; isBuy: boolean; barWord: string }) {
+export function DecisionWhy({ e, isBuy, accum = false, barWord }: {
+  e: EntrySignal; isBuy: boolean; accum?: boolean; barWord: string;
+}) {
   const w = e.why;
   if (!w) return <p className="ta-note">No details for this decision.</p>;
   const maxAbs = Math.max(1, ...w.factors.map((f) => Math.abs(f.delta)));
@@ -40,12 +42,13 @@ export function DecisionWhy({ e, isBuy, barWord }: { e: EntrySignal; isBuy: bool
       <div className="why-col">
         <h4>Decision</h4>
         <p className="why-p">
-          Model {isBuy ? "P(profit-take first)" : "P(pullback first)"} <b>{pct(e.prob)}</b> vs threshold{" "}
+          Model {accum ? "P(profit at the next SELL)" : isBuy ? "P(profit-take first)" : "P(pullback first)"}{" "}
+          <b>{pct(e.prob)}</b> vs threshold{" "}
           <b>{pct(e.threshold)}</b> ({edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)} pts) · training base rate{" "}
           {pct(w.base_rate)}.
           {e.setup && <> Setup: <b>{SETUP_LABEL[e.setup as Exclude<typeof e.setup, "">]}</b>.</>}
         </p>
-        {isBuy && (
+        {isBuy && !accum && (
           <p className="why-p">
             Entry {price(e.entry)} · profit-take <b className="up">{price(e.target)}</b> ({e.target_basis}) · stop-loss{" "}
             <b className="down">{price(e.stop)}</b> ({e.stop_basis}).

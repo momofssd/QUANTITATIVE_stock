@@ -17,7 +17,10 @@ const money = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDi
 function TradeCell({ tr, unit }: { tr?: TradeView; unit: string }) {
   if (!tr) return <td className="l">—</td>;
   if (tr.status === "open") {
-    return <td className="l">Open <span className={dirCls(tr.return_pct)}>{signedPct(tr.return_pct, 1)}</span> · {left(tr, unit)} left</td>;
+    return (
+      <td className="l">Open <span className={dirCls(tr.return_pct)}>{signedPct(tr.return_pct, 1)}</span> ·{" "}
+        {tr.days_left === null || tr.days_left === undefined ? "until the next SELL" : `${left(tr, unit)} left`}</td>
+    );
   }
   return (
     <td className="l">
@@ -90,12 +93,14 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
     else n.add(time);
     return n;
   });
-  const cols = isBuy ? 9 : 8;
+  const accum = spec.label_rule === "next_sell";   // sell-signal BUY model: no levels, sold at the next SELL
+  const cols = accum ? 7 : isBuy ? 9 : 8;
   return (
     <div className="ta-dec-table">
       <div className="ta-dec-h">
         <span className={`mark-chip mark-${spec.key}`}>{MARK[spec.key].text}</span>
-        <b>{isBuy ? "BUY decisions" : "SELL (take-profit) decisions"}</b>
+        <b>{spec.label_rule === "next_sell" ? "BUY S decisions (sell-signal strategy)"
+          : isBuy ? "BUY decisions (profit-take / stop-loss)" : "SELL (take-profit) decisions"}</b>
         <span className="ta-dec-sub">
           most recent {Math.min(LIMIT, t.signals.length)} of {t.signals.length} · {inRange} inside the chart range
           (from {rangeStart}) · older rows are dimmed · click a row for what supported the decision
@@ -111,10 +116,10 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
               <tr>
                 <th className="l">Date</th><th className="l">Setup</th><th>P</th>
                 <th>{isBuy ? "Entry" : "Price"}</th>
-                <th>{isBuy ? "Profit-take" : "Pullback to"}</th>
-                <th>{isBuy ? "Stop-loss" : "Invalid above"}</th>
-                <th className="l">{isBuy ? "Justified?" : "Outcome"}</th>
-                {isBuy && <th className="l">Trade exit ({spec.horizon} sessions)</th>}
+                {!accum && <th>{isBuy ? "Profit-take" : "Pullback to"}</th>}
+                {!accum && <th>{isBuy ? "Stop-loss" : "Invalid above"}</th>}
+                <th className="l">{accum ? "Profit at next SELL?" : isBuy ? "Justified?" : "Outcome"}</th>
+                {isBuy && <th className="l">{accum ? "Sold at next SELL" : `Trade exit (${spec.horizon} sessions)`}</th>}
                 <th className="l">{sizing === "usd" ? "$100" : "1-share"} sim</th>
               </tr>
             </thead>
@@ -134,7 +139,7 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
                       <td className="l">{e.setup ? SETUP_LABEL[e.setup as Exclude<SetupName, "">] : "—"}</td>
                       <td>{pct(e.prob)}</td>
                       <td>{price(e.entry)}</td>
-                      {isBuy ? (
+                      {accum ? null : isBuy ? (
                         <>
                           <LevelCell value={e.target} atr={e.tp_atr} basis={e.target_basis} cls="up" sign="+" />
                           <LevelCell value={e.stop} atr={e.sl_atr} basis={e.stop_basis} cls="down" sign="−" />
@@ -154,7 +159,7 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
                     </tr>
                     {expanded && (
                       <tr className="dec-why">
-                        <td colSpan={cols}><DecisionWhy e={e} isBuy={isBuy} barWord={barWord} /></td>
+                        <td colSpan={cols}><DecisionWhy e={e} isBuy={isBuy} accum={accum} barWord={barWord} /></td>
                       </tr>
                     )}
                   </Fragment>

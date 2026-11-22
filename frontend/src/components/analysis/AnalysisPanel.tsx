@@ -102,7 +102,8 @@ export function AnalysisPanel({ a, mismatch, chartRange, onRetrain, livePrice }:
         <>
           <div className="ta-legend">
             Chart:
-            <span><b className="mark-chip mark-short">BUY</b> short-term entry ▲ below the bar</span>
+            <span><b className="mark-chip mark-short">BUY</b> entry (profit-take / stop-loss) ▲ below the bar</span>
+            <span><b className="mark-chip mark-accum">BUY S</b> entry for the sell-signal strategy ▲</span>
             <span><b className="mark-chip mark-tp_short">SELL</b> take profit ▼ above the bar</span>
             <span><i className="dot-o" style={{ background: GREEN }} />signal was right</span>
             <span><i className="dot-o" style={{ background: RED }} />wrong / expired</span>
@@ -131,15 +132,21 @@ export function AnalysisPanel({ a, mismatch, chartRange, onRetrain, livePrice }:
           <CurrentKPanel r={r} intraday={a.intraday} livePrice={livePrice} />
           <ReadingGuide buyHold={r.targets.short.spec.horizon} sellHold={r.targets.tp_short.spec.horizon} />
           <div className="ta-group">Short-term</div>
-          <div className="ta-grid">{card("short")}{card("tp_short")}</div>
+          <div className="ta-grid">{card("short")}{card("accum")}{card("tp_short")}</div>
           <div className="ta-group">Most recent decisions</div>
           <div className="ta-decisions-list">
             {sim && <SimulationPanel sim={sim} variant={simVariant} onVariant={setSimVariant} sizing={simSizing}
               onSizing={setSimSizing} barUnit={r.bar_unit} />}
+            {/* each BUY table shows its own strategy's simulation; the SELL table the strategy selected above */}
             <DecisionTable t={r.targets.short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
-              sim={sim?.[simSizing][simVariant]} simStart={sim?.start_time} sizing={simSizing} />
+              sim={sim?.[simSizing].with_bracket ?? undefined} simStart={sim?.[simSizing].with_bracket?.start_time}
+              sizing={simSizing} />
+            <DecisionTable t={r.targets.accum} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
+              sim={sim?.[simSizing].sell_only ?? undefined} simStart={sim?.[simSizing].sell_only?.start_time}
+              sizing={simSizing} />
             <DecisionTable t={r.targets.tp_short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
-              sim={sim?.[simSizing][simVariant]} simStart={sim?.start_time} sizing={simSizing} />
+              sim={sim?.[simSizing][simVariant] ?? undefined} simStart={sim?.[simSizing][simVariant]?.start_time}
+              sizing={simSizing} />
           </div>
           <FactorRelations relations={r.relations} years={r.window.years} />
           <details className="ta-method">

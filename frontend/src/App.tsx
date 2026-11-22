@@ -21,7 +21,6 @@ import { QuoteHeader } from "./components/quote/QuoteHeader";
 import { RecentSymbols } from "./components/quote/RecentSymbols";
 import { DataSource } from "./components/sidebar/DataSource";
 import { KeyStatistics } from "./components/sidebar/KeyStatistics";
-import { SecurityDetails } from "./components/sidebar/SecurityDetails";
 import { useAnalysis } from "./hooks/useAnalysis";
 import { useBanner } from "./hooks/useBanner";
 import { isLiveRange, useBars } from "./hooks/useBars";
@@ -71,10 +70,27 @@ export default function App() {
   const sameBars = !!ar && ar.timeframe === timeframe && (!ar.intraday || ar.extended === extended);
   const sameRange = !!q && q.range === range && (range !== "CUSTOM" || (q.start === from && (q.end ?? "") === (to ?? "")));
   const mismatch = !ar ? null : !sameBars ? "bars" as const : !sameRange ? "range" as const : null;
-  const viewStart = barsApi.bars?.payload.view_start;
+  // A range that starts before the trained window (MAX / 10Y after a 1Y training) needs signals the training
+  // does not have: retrain for it automatically (the old markers stay until the new ones arrive). Ranges inside the
+  // trained window remain a pure view change.
+  // The chart's real start: only once its bars belong to the selected range (not the previous range's while the new
+  // ones load), and never before the first loaded bar (MAX's view starts at Jan 1, the data on the first trading day).
+  const payload = barsApi.bars?.payload;
+  const firstBar = payload && "time" in payload.columns ? payload.columns.time[0] : undefined;
+  const viewStart = payload && payload.range === range && payload.view_start !== undefined
+    ? Math.max(payload.view_start, firstBar ?? payload.view_start) : undefined;
+  const autoKey = useRef("");
+  useEffect(() => {
+    if (!ar || !sameBars || analysis.loading || viewStart === undefined || ar.window.start_time === undefined) return;
+    if (viewStart >= ar.window.start_time) return;
+    const key = `${symbol}|${range}|${from}|${to}|${timeframe}|${viewStart}`;
+    if (autoKey.current === key) return;   // once per range (no loop if a retrain cannot reach further back)
+    autoKey.current = key;
+    onAnalyze();
+  }, [ar, sameBars, analysis.loading, viewStart, symbol, range, from, to, timeframe, onAnalyze]);
   const markers = useMemo(
-    () => (ar && sameBars ? buildMarkers(ar, analysis.visible, viewStart) : NO_MARKERS),
-    [ar, sameBars, analysis.visible, viewStart],
+    () => (ar && sameBars ? buildMarkers(ar, analysis.visible) : NO_MARKERS),
+    [ar, sameBars, analysis.visible],
   );
   const priceLines = useMemo(
     () => (ar && sameBars ? buildPriceLines(ar, analysis.visible) : NO_LINES),
@@ -160,7 +176,6 @@ export default function App() {
           />
           <aside className="side">
             <KeyStatistics quote={quote.quote} />
-            <SecurityDetails quote={quote.quote} />
             <DataSource quote={quote.quote} health={health} clock={clock} stream={stream} />
           </aside>
         </div>

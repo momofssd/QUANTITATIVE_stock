@@ -118,6 +118,16 @@ function TradeTable({ a, e }: { a: TradeSummary; e: TradeSummary }) {
 function ExitRule({ t, unit }: { t: TargetResult; unit: string }) {
   const r = t.trades?.rules;
   if (!r) return null;
+  if (r.label_rule === "next_sell") {
+    return (
+      <div className="ta-exit-rule">
+        Sell-signal strategy: each BUY S is held until the next SELL decision and sold there - no profit-take, stop-loss
+        or time limit. This model is trained on whether that sale was at a profit.
+        {t.proxy_until && <> Before {t.proxy_until} (the SELL model's first decision) the interim-top setup stood in for
+          SELL when labelling its training data.</>}
+      </div>
+    );
+  }
   const window = r.horizon_mode === "sessions" ? `${r.horizon} trading sessions` : `${r.horizon} ${unit}`;
   const opt = r.bracket === "optimal";
   return (
@@ -152,7 +162,10 @@ function StatsRow({ isBuy, signals, hitRate, baseRate, setupRate, auc }: {
 function RangeBlock({ t, rs, rw, isBuy }: { t: TargetResult; rs: RangeStats; rw: Props["rangeWindow"]; isBuy: boolean }) {
   const tb = t.trades;
   const pending = rs.signals - rs.resolved;
-  const what = isBuy ? "the profit-take was reached before the stop-loss" : "the pullback came before a rise";
+  const accum = t.spec.label_rule === "next_sell";
+  const what = accum ? "the lot was sold at a profit at the next SELL decision"
+    : isBuy ? `the profit-take was reached before the stop-loss within ${t.spec.horizon} trading sessions`
+      : `the pullback came before a rise within ${t.spec.horizon} trading sessions`;
   return (
     <>
       <div className="ta-section">This chart range · {rw.start} → {rw.end} · {rw.bars.toLocaleString()} bars</div>
@@ -161,12 +174,12 @@ function RangeBlock({ t, rs, rw, isBuy }: { t: TargetResult; rs: RangeStats; rw:
         {rs.signals === 0
           ? <>No {isBuy ? "BUY" : "SELL"} decision inside this range (a decision needs the setup <b>and</b> the model;
               at most one per cooldown).</>
-          : <>{isBuy ? "Justified" : "Hit rate"} = {what} within {t.spec.horizon} trading sessions: {rs.hits} of {rs.resolved} decided
-              {pending > 0 && <> · {pending} still open (needs 5 more sessions)</>}.</>}
+          : <>{isBuy ? "Justified" : "Hit rate"} = {what}: {rs.hits} of {rs.resolved} decided
+              {pending > 0 && <> · {pending} still open ({accum ? "waiting for a SELL" : "outcome not known yet"})</>}.</>}
         {" "}Setup only / Any bar: {rs.setup_bars.toLocaleString()} setup bars / {rs.decided_bars.toLocaleString()} bars
         with a known outcome{rs.decided_bars < rs.bars && (
-          <> ({rs.bars - rs.decided_bars} recent bar{rs.bars - rs.decided_bars === 1 ? "" : "s"} still open: neither level
-            hit and the {t.spec.horizon}-session window not over yet)</>
+          <> ({rs.bars - rs.decided_bars} recent bar{rs.bars - rs.decided_bars === 1 ? "" : "s"} still open:{" "}
+            {accum ? "no SELL after them yet" : `neither level hit and the ${t.spec.horizon}-session window not over yet`})</>
         )}.
       </p>
       {isBuy && tb && (
@@ -247,7 +260,13 @@ export function TargetCard({ t, barUnit, rangeWindow, window, showMarkers, onTog
       {isBuy && <ExitRule t={t} unit={barUnit} />}
       {isBuy && optimization && <OptimizationPanel o={optimization} barUnit={barUnit} hold={t.spec.horizon} />}
 
-      {isBuy && ot?.status === "open" && t.open_trade && (
+      {isBuy && t.spec.label_rule === "next_sell" && ot?.status === "open" && t.open_trade && (
+        <div className="ta-open">
+          <b>Open position</b> from {t.open_trade.date} at {price(t.open_trade.entry)}:{" "}
+          <span className={dirCls(ot.return_pct)}>{signedPct(ot.return_pct, 1)}</span> · held until the next SELL decision
+        </div>
+      )}
+      {isBuy && t.spec.label_rule !== "next_sell" && ot?.status === "open" && t.open_trade && (
         <div className="ta-open">
           <b>Open trade</b> from {t.open_trade.date} at {price(t.open_trade.entry)}:{" "}
           <span className={dirCls(ot.return_pct)}>{signedPct(ot.return_pct, 1)}</span> · {ot.trailing ? "trailing stop" : "stop-loss"}{" "}

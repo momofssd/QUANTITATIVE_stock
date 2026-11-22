@@ -18,6 +18,7 @@ export function TrainingDates({ r }: { r: AnalysisResult }) {
   if (!t) return null;
   const rows = [
     { key: "short" as const, label: "BUY", chip: "mark-short" },
+    { key: "accum" as const, label: "BUY S", chip: "mark-accum" },
     { key: "tp_short" as const, label: "SELL", chip: "mark-tp_short" },
   ];
   const cur = t.targets.short.current;

@@ -98,7 +98,9 @@ export class ChartEngine {
     if (!ext) return original();
     const mid = (ext.min + ext.max) / 2;
     const half = Math.max((ext.max - ext.min) / 2, Math.abs(mid) * 1e-4) * this.yZoom;
-    return { priceRange: { minValue: mid - half, maxValue: mid + half } };
+    // never below zero for positive prices (a zoomed-out axis showing negative prices helps nobody)
+    const minValue = ext.min > 0 ? Math.max(0, mid - half) : mid - half;
+    return { priceRange: { minValue, maxValue: mid + half } };
   };
 
   private priceSeries!: AnySeries;
@@ -240,7 +242,9 @@ export class ChartEngine {
       const half = Math.max(5, ((r.to - r.from) / 2) * factor);
       ts.setVisibleLogicalRange({ from: c - half, to: c + half });
     }
-    const z = Math.min(5, Math.max(0.2, this.yZoom * factor));
+    // Zooming out widens the time range, which already rescales prices to the wider view; the price axis itself
+    // zooms out at most 1.5x (zoom in: down to 0.2x).
+    const z = Math.min(1.5, Math.max(0.2, this.yZoom * factor));
     this.yZoom = Math.abs(z - 1) < 1e-6 ? 1 : z;
     this.main.priceScale("right").applyOptions({ autoScale: true });
   }

@@ -6,6 +6,7 @@ import { SETUP_LABEL } from "../../chart/markers";
 import { TF_LABEL } from "../../config/timeframes";
 import { isNum, price } from "../../lib/format";
 import type { AnalysisResult, CurrentSignal, IntradayCheck, Projection, ProjectedSide, SetupExplain } from "../../types/api";
+import { MomentumBox } from "./MomentumBox";
 
 const pct = (v: number | null | undefined) => (isNum(v) ? `${Math.round(v * 100)}%` : "—");
 type Tone = "ok" | "soft" | "warn" | "bad" | "none";
@@ -199,6 +200,7 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
   const buy = r.targets.short;
   const sell = r.targets.tp_short;
   const cb = buy.current;
+  const ca = r.targets.accum?.current ?? null;   // BUY for the sell-signal strategy
   const cs = sell.current;
   if (!cb || !cs) return null;
   const db = decisionText("buy", cb, intraday);
@@ -210,6 +212,7 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
         Current K line <b>{cb.date}</b> · {TF_LABEL[r.timeframe]}
         {isNum(livePrice) && <> · live price <b>{price(livePrice)}</b></>}
       </div>
+      <MomentumBox r={r} />
       {r.projection && <ProjectionBox pj={r.projection} live={livePrice}
         unit={r.timeframe === "1Day" ? "daily" : r.timeframe === "1Week" ? "weekly" : TF_LABEL[r.timeframe]} />}
       <div className="ck-grid">
@@ -242,6 +245,16 @@ export function CurrentKPanel({ r, intraday, livePrice }: Props) {
                 sessions (the most a BUY is held).
               </p>
             </>
+          )}
+          {ca && (
+            <div className={`ck-accum ${ca.signal ? "on" : ""}`}>
+              <span className="mark-chip mark-accum">BUY S</span>{" "}
+              <b>{ca.signal ? "BUY for the sell-signal strategy" : "No BUY for the sell-signal strategy"}</b>
+              <small>
+                {" "}· model P(profit at the next SELL) {pct(ca.prob)} vs threshold {pct(ca.threshold)}
+                {!ca.setup && " · no rebound / trend setup on this bar"}
+              </small>
+            </div>
           )}
           <Checklist title="Rebound (falling momentum easing)" s={r.setups_now.rebound} />
           <Checklist title="Trend (clear bullish trend)" s={r.setups_now.trend} />

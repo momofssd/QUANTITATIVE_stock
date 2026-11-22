@@ -27,6 +27,14 @@ def test_display_window_custom_validation():
     assert str(s.date()) == "2024-01-01" and str(e.date()) == "2024-02-01"  # inclusive end
 
 
+def test_3y_and_10y_ranges():
+    from backend.app.services.bars_service import resolve_range
+    now = pd.Timestamp("2026-11-20 12:00", tz="America/New_York")
+    assert str(display_window("3Y", None, None, now)[0].date()) == "2023-11-20"
+    assert str(display_window("10Y", None, None, now)[0].date()) == "2016-11-20"
+    assert resolve_range("3y", None)[:2] == ("3Y", "1Day") and resolve_range("10Y", None)[:2] == ("10Y", "1Week")
+
+
 async def test_daily_loads_full_history_and_sets_view(fake_alpaca):
     out = await build_bars(BarsRequest(symbol="AAPL", range="1Y"))
     first = pd.Timestamp(out["columns"]["time"][0], unit="s")

@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api", tags=["bars"])
 @router.get("/bars/{symbol}")
 async def bars(
     symbol: str,
-    range: str = Query("1D", description="1D 5D 1M 3M 6M YTD 1Y 5Y MAX CUSTOM"),
+    range: str = Query("1D", description="1D 5D 1M 3M 6M YTD 1Y 3Y 5Y 10Y MAX CUSTOM"),
     timeframe: str | None = Query(None, description="1Min 5Min 15Min 30Min 1Hour 4Hour 1Day 1Week 1Month"),
     start: str | None = Query(None, description="CUSTOM range start, YYYY-MM-DD"),
     end: str | None = Query(None, description="CUSTOM range end (inclusive), YYYY-MM-DD"),

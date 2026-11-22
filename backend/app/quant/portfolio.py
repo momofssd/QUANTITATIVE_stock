@@ -143,31 +143,40 @@ def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizi
     return {"trades": lots[::-1], "summary": summary, "by_setup": by_setup}   # newest lot first
 
 
-def _book(buys: list[dict], sells: list[dict], last: dict, sizing: str) -> dict:
+def _variant(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str,
+             year_start: dict | None = None, limit: int | None = LISTED) -> dict | None:
+    """One strategy over the `limit` most recent BUYs (None = all given): the run + its period, counts, baselines."""
+    if limit is not None:
+        buys = buys[-limit:]
+    if not buys:
+        return None
     start = buys[0]
+    sells = [s for s in sells if s["i"] >= start["i"]]
     q0 = _qty(start["price"], sizing)
-    first = q0 * (last["price"] - start["price"])
     cost_all = sum(_qty(b["price"], sizing) * b["price"] for b in buys)
+    shares_all = sum(_qty(b["price"], sizing) for b in buys)
     never = sum(_qty(b["price"], sizing) * (last["price"] - b["price"]) for b in buys)
     return {
-        "sell_only": run(buys, sells, last, use_bracket=False, sizing=sizing),
-        "with_bracket": run(buys, sells, last, use_bracket=True, sizing=sizing),
-        # Baselines: the same BUYs never sold; one lot bought at the first BUY and held.
-        "hold_all": {"pnl": round(never, 2), "pnl_pct": round(never / cost_all * 100, 2)},
-        "buy_hold": {"pnl": round(first, 2), "pnl_pct": round(first / (q0 * start["price"]) * 100, 2)},
+        **run(buys, sells, last, use_bracket, sizing, year_start),
+        "start_time": start["time"], "start_date": start["date"], "buys": len(buys), "sells": len(sells),
+        # baselines: the same BUYs never sold; one lot bought at the first BUY and held
+        "hold_all": {"pnl": round(never, 2), "pnl_pct": round(never / cost_all * 100, 2),
+                     # every lot kept: shares on hand, what they cost, what they are worth at the last close
+                     "shares": round(shares_all, 6), "cost": round(cost_all, 2),
+                     "value": round(shares_all * last["price"], 2)},
+        "buy_hold": {"pnl": round(q0 * (last["price"] - start["price"]), 2),
+                     "pnl_pct": round((last["price"] / start["price"] - 1) * 100, 2)},
     }
 
 
-def simulate_decisions(buys: list[dict], sells: list[dict], last: dict) -> dict | None:
-    """Both variants and both sizings over the period that starts at the oldest of the LISTED most recent BUYs."""
-    if not buys:
+def simulate_decisions(buys_by_variant: dict[str, list[dict]], sells: list[dict], last: dict) -> dict | None:
+    """Both strategies x both sizings. buys_by_variant: "sell_only" = the sell-signal BUY model's decisions (every
+    BUY adds a lot, the next SELL sells everything); "with_bracket" = the profit-take / stop-loss BUY model's (each
+    lot also sold at its own profit-take / stop-loss / time limit)."""
+    if not any(buys_by_variant.values()):
         return None
-    buys = buys[-LISTED:]
-    start = buys[0]
-    sells = [s for s in sells if s["i"] >= start["i"]]
     return {
-        "stake": STAKE, "listed": LISTED,
-        "start_time": start["time"], "start_date": start["date"], "end_date": last["date"],
-        "buys": len(buys), "sells": len(sells),
-        **{sz: _book(buys, sells, last, sz) for sz in SIZINGS},
+        "stake": STAKE, "listed": LISTED, "end_date": last["date"],
+        **{sz: {v: _variant(buys_by_variant.get(v, []), sells, last, v == "with_bracket", sz)
+                for v in ("sell_only", "with_bracket")} for sz in SIZINGS},
     }

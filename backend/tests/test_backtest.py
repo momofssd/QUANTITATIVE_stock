@@ -53,19 +53,25 @@ def test_ytd_counts_only_this_years_pnl():
 
 def test_backtest_result_and_comparison():
     cands = [cand(i, "rebound" if i % 2 else "trend", 0.55 + (i % 5) * 0.05, price=100 + i) for i in range(0, 60, 3)]
-    run = {"candidates": cands, "cooldown": 1, "sell_candidates": [sell(30, 140.0), sell(55, 120.0)], "sell_cooldown": 5,
+    acc = [dict(c, prob=0.9 if c["i"] % 6 == 0 else 0.1) for c in cands]
+    run = {"candidates": cands, "accum_candidates": acc, "cooldown": 1,
+           "sell_candidates": [sell(30, 140.0), sell(55, 120.0)], "sell_cooldown": 5,
            "last": ev(59, 150.0), "year_start": {"i": 40, "date": "2026-01-01", "prev_close": 139.0}}
     out = qbt.backtest(run, n=5, setups="both", min_prob=0.6, sizing="usd")
-    res = out["result"]
+    br = out["variants"]["with_bracket"]
+    res = br["result"]
     assert res["decisions"] == 5 and all(p >= 0.6 for p in res["probs"])
-    assert {c["setups"] for c in out["compare"]} == {"rebound", "trend", "both"}
-    both = next(c for c in out["compare"] if c["setups"] == "both")
-    assert both["sell_only"]["summary"]["total_pnl"] == res["sell_only"]["summary"]["total_pnl"]
-    assert "ytd" in res["sell_only"]["summary"] and "ytd" in res["with_bracket"]["summary"]
-    assert out["pool"]["both"]["qualified"] >= res["decisions"]
-    assert qbt.backtest(run, n=5, setups="trend", min_prob=0.99)["result"] is None   # nothing qualifies
+    assert {c["setups"] for c in br["compare"]} == {"rebound", "trend", "both"}
+    both = next(c for c in br["compare"] if c["setups"] == "both")
+    assert both["summary"]["total_pnl"] == res["summary"]["total_pnl"]
+    assert "ytd" in res["summary"]
+    assert br["pool"]["both"]["qualified"] >= res["decisions"]
+    # the sell-signal strategy buys from its own BUY model's decisions
+    so = out["variants"]["sell_only"]["result"]
+    assert so["decisions"] == 5 and all(p == 0.9 for p in so["probs"])
+    assert qbt.backtest(run, n=5, setups="trend", min_prob=0.99)["variants"]["with_bracket"]["result"] is None
     assert qbt.backtest(run, n=5, sell_min_prob=0.95)["sell_decisions"] == 0           # custom SELL threshold
-    assert out["model_thresholds"]["buy"] == [0.55, 0.55]
+    assert br["model_thresholds"] == [0.55, 0.55]
 
 
 def test_service_validates_and_reports_missing_runs():
@@ -74,13 +80,13 @@ def test_service_validates_and_reports_missing_runs():
     with pytest.raises(ApiError) as e:
         svc.run_backtest("nope", 30, "both", 0.6, "usd")
     assert e.value.status == 404
-    svc._runs["t1"] = {"candidates": [], "cooldown": 5, "sell_candidates": [], "sell_cooldown": 5,
+    svc._runs["t1"] = {"candidates": [], "accum_candidates": [], "cooldown": 5, "sell_candidates": [], "sell_cooldown": 5,
                        "last": ev(1, 1.0), "year_start": None,
                        "symbol": "X", "timeframe": "1Day", "range": "1Y", "bar_unit": "trading days", "window": {}}
     try:
         with pytest.raises(ApiError):
             svc.run_backtest("t1", 101, "both", 0.6, "usd")
-        assert svc.run_backtest("t1", 30, "both", 0.6, "usd")["result"] is None
+        assert svc.run_backtest("t1", 30, "both", 0.6, "usd")["variants"]["sell_only"]["result"] is None
         assert svc.run_backtest("t1", 30, "both", None, "usd", None)["params"]["min_prob"] is None
     finally:
         svc._runs.pop("t1", None)

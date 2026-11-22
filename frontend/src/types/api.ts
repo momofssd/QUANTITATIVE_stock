@@ -1,7 +1,7 @@
 /** Shapes of the backend's JSON responses and live WebSocket messages. */
 
 export type Timeframe = "1Min" | "5Min" | "15Min" | "30Min" | "1Hour" | "4Hour" | "1Day" | "1Week" | "1Month";
-export type RangeKey = "1D" | "5D" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "5Y" | "MAX" | "CUSTOM";
+export type RangeKey = "1D" | "5D" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "3Y" | "5Y" | "10Y" | "MAX" | "CUSTOM";
 export type FeedLabel = "iex" | "sip" | "sip+iex";
 
 export interface Health {
@@ -159,9 +159,10 @@ export type LiveMessage = StreamStatus | TickMessage | QuoteMessage | BarMessage
 
 // ---------------------------------------------------------------- entry-point analysis (GET /api/analysis/{symbol})
 
-export type TargetKey = "short" | "tp_short";
+/** short = BUY (profit-take / stop-loss), accum = BUY for the sell-signal strategy, tp_short = SELL. */
+export type TargetKey = "short" | "accum" | "tp_short";
 export type Outcome = "target" | "stop" | "expired" | "pending";
-export type ExitReason = "target" | "trailing stop" | "take-profit signal" | "time limit" | "stop";
+export type ExitReason = "target" | "trailing stop" | "take-profit signal" | "sell decision" | "time limit" | "stop";
 
 export type BracketMode = "fixed" | "optimal";
 
@@ -198,7 +199,7 @@ export interface TrainingInfo {
   data: { start: string; end: string; bars: number };     // the interval's bars
   daily: { start: string; end: string; bars: number };    // the stock's daily bars
   factors: { start: string; end: string };                // Yahoo factors
-  targets: Record<"short" | "tp_short", {
+  targets: Record<TargetKey, {
     folds: number;
     retrain_every: number;
     first: (TrainSpan & { predicts_from: string }) | null;  // the oldest walk-forward model
@@ -272,16 +273,19 @@ export interface SimYtd {
 
 export type BacktestSetups = "rebound" | "trend" | "both";
 
-export interface BacktestScenario {
+export interface BacktestScenario extends SimStrategy {
   decisions: number;
-  start_date: string;
   end_date: string;
-  sells: number;
-  hold_all: { pnl: number; pnl_pct: number };
-  buy_hold: { pnl: number; pnl_pct: number };
   probs: number[];
-  sell_only: SimRun;
-  with_bracket: SimRun;
+}
+
+/** One strategy on the Backtests page. */
+export interface BacktestVariant {
+  /** BUY-setup bars in the window and how many qualify at the threshold, per setup choice. */
+  pool: Record<BacktestSetups, { setup_bars: number; qualified: number; max_prob: number }>;
+  model_thresholds: [number, number] | null;   // this BUY model's own thresholds over the window
+  result: BacktestScenario | null;
+  compare: { setups: BacktestSetups; decisions: number; summary: SimRun["summary"] | null }[];
 }
 
 export interface BacktestResult {
@@ -294,14 +298,10 @@ export interface BacktestResult {
   window: { start: string; end: string; bars: number };
   /** min_prob / sell_min_prob null = the model's own threshold (training base rate + 10 pts, per retrain). */
   params: { n: number; setups: BacktestSetups; min_prob: number | null; sell_min_prob: number | null; sizing: SimSizing };
-  /** The model's own thresholds over the window ([lowest, highest]). */
-  model_thresholds: { buy: [number, number] | null; sell: [number, number] | null };
+  /** sell_only = sell-signal strategy (its own BUY model); with_bracket = profit-take / stop-loss strategy. */
+  variants: Record<"sell_only" | "with_bracket", BacktestVariant>;
+  sell_model_thresholds: [number, number] | null;   // the SELL model's own thresholds over the window
   sell_decisions: number;   // SELL decisions in the window under the SELL threshold
-  /** BUY-setup bars in the window and how many qualify at the threshold, per strategy. */
-  pool: Record<BacktestSetups, { setup_bars: number; qualified: number; max_prob: number }>;
-  result: BacktestScenario | null;
-  compare: { setups: BacktestSetups; decisions: number; sell_only?: { summary: SimRun["summary"] };
-    with_bracket?: { summary: SimRun["summary"] } }[];
   year_start: { i: number; date: string; prev_close: number | null } | null;
 }
 
@@ -318,23 +318,30 @@ export interface SimRun {
 }
 
 /** One sizing of the simulation: every BUY buys $100 worth ("usd") or 1 share ("share"). */
-export interface SimBook {
-  sell_only: SimRun;    // the next SELL decision sells every lot held
-  with_bracket: SimRun; // ... or each lot at its BUY's profit-take / stop-loss if that comes first
-  hold_all: { pnl: number; pnl_pct: number }; // the same BUYs, never sold
+/** One strategy's simulation: the run + its own period, counts and baselines. */
+export interface SimStrategy extends SimRun {
+  start_time: number;
+  start_date: string;
+  buys: number;
+  sells: number;
+  /** The same BUYs, never sold: P&L, shares on hand, their cost and their value at the last close. */
+  hold_all: { pnl: number; pnl_pct: number; shares: number; cost: number; value: number };
   buy_hold: { pnl: number; pnl_pct: number }; // one lot bought at the first BUY and held
+}
+
+export interface SimBook {
+  /** Sell-signal strategy: BUYs from the sell-signal BUY model, every BUY adds a lot, the next SELL sells all. */
+  sell_only: SimStrategy | null;
+  /** Profit-take / stop-loss strategy: BUYs from that BUY model, each lot also sold at its own levels / time limit. */
+  with_bracket: SimStrategy | null;
 }
 
 export type SimSizing = "usd" | "share";
 
 export interface Simulation {
   stake: number;
-  listed: number;       // the simulation covers this many most recent BUYs
-  start_time: number;
-  start_date: string;
+  listed: number;       // each strategy covers this many most recent BUYs of its BUY model
   end_date: string;
-  buys: number;
-  sells: number;
   usd: SimBook;
   share: SimBook;
 }
@@ -360,6 +367,7 @@ export interface TargetSpec {
   trail_after_atr: number;   // entries: trailing stop starts once the close is this many ATR above entry
   trail_atr: number;         // entries: trailing distance below the highest close (0 = plain bracket order)
   exit_with: string;         // entries: take-profit target whose signal can close the trade ("" = none)
+  label_rule: "bracket" | "next_sell"; // bracket: target before stop; next_sell: profit at the next SELL decision
   horizon_mode: "bars" | "sessions"; // horizon counted in bars of the interval or in trading sessions
   atr_basis: "bar" | "daily";        // ATR of the interval's bars or daily ATR
   bracket: BracketMode;              // BUY levels: fixed ATR multiples or set per decision
@@ -424,6 +432,8 @@ export interface CurrentSignal {
   target_basis: string;  // what set the profit-take ("1.5x risk", "50% retracement", "1.5 ATR", ...)
   stop_basis: string;    // what set the stop-loss ("1 ATR", "optimized")
   chase_limit: number | null; // BUY: don't enter above this
+  /** Today's model on the last K lines (oldest first, the current one last): momentum toward / away from a decision. */
+  recent: { date: string; prob: number; setup: SetupName; signal: boolean }[];
   horizon_days: number;
 }
 
@@ -500,6 +510,7 @@ export interface TradesBlock {
   rules: {
     stop_atr: number; target_atr: number; trail_after_atr: number; trail_atr: number; horizon: number;
     horizon_mode: "bars" | "sessions"; atr_basis: "bar" | "daily"; exit_with: string; bracket: BracketMode;
+    label_rule: "bracket" | "next_sell";
   };
 }
 
@@ -509,6 +520,8 @@ export interface TargetResult {
   signals: EntrySignal[];
   stats: TargetStats;
   range_stats: RangeStats;
+  /** BUY S: until this date (the SELL model's first decision) the interim-top setup stood in for SELL in its labels. */
+  proxy_until?: string | null;
   trades: TradesBlock | null;
   open_trade: EntrySignal | null;
   importance: { group: string; weight: number }[];
@@ -535,7 +548,8 @@ export interface AnalysisResult {
   /** The chart's own range (what the markers, range stats and highlighted decisions cover). */
   range_window: { start: string; end: string; bars: number; start_time: number };
   /** The longer model-check window (>= 1,260 bars) used for the verdict and AUC. */
-  window: { start: string; end: string; bars: number; train_bars: number; retrain_every: number; years: number };
+  window: { start: string; end: string; bars: number; start_time: number; train_bars: number; retrain_every: number;
+    years: number };
   method: {
     model: string; training: string; signal_rule: string; features: number; atr: string; factor_alignment: string;
   };
@@ -549,6 +563,8 @@ export interface AnalysisResult {
   simulation: Simulation | null;
   /** The actual dates every model of this run learned from. */
   training: TrainingInfo;
+  /** Price momentum of the last K lines (oldest first). */
+  k_momentum: { date: string; close: number; rsi: number | null; macd_hist_atr: number | null }[];
   /** Server-side handle of this training for the Backtests page (/api/backtest/{run_id}). */
   run_id: string;
   /** At which close would the current K line become a BUY / a SELL (null when it cannot be computed)? */

@@ -66,13 +66,32 @@ def test_one_share_sizing():
 
 def test_same_bar_sell_then_buy_and_period_start():
     buys = [ev(i, 100.0) for i in range(40)]
-    sim = portfolio.simulate_decisions(buys, [ev(5, 1.0), ev(20, 110.0)], ev(50, 100.0))
-    assert sim["buys"] == portfolio.LISTED and sim["start_date"] == "d10"   # the 30 most recent BUYs
-    assert sim["sells"] == 1                                                # the SELL before the period is ignored
+    sim = portfolio.simulate_decisions({"sell_only": buys, "with_bracket": buys[:5]}, [ev(5, 1.0), ev(20, 110.0)],
+                                       ev(50, 100.0))
+    so = sim["usd"]["sell_only"]
+    assert so["buys"] == portfolio.LISTED and so["start_date"] == "d10"     # the 30 most recent BUYs
+    assert so["sells"] == 1                                                 # the SELL before the period is ignored
+    wb = sim["usd"]["with_bracket"]                                         # each strategy has its own BUYs / period
+    assert wb["buys"] == 5 and wb["start_date"] == "d0" and wb["sells"] == 2
     assert set(sim) >= {"usd", "share"}
     lots = sim["usd"]["sell_only"]["trades"]
     assert sum(t["sell_date"] == "d20" and t["reason"] == "sell" for t in lots) == 10   # d10..d19 sold on d20
     d20 = next(t for t in lots if t["buy_date"] == "d20")
     assert d20["status"] == "open"                                          # bought after the d20 SELL
-    assert sim["usd"]["hold_all"]["pnl"] == 0.0 and sim["usd"]["sell_only"]["summary"]["max_lots"] == 20
+    assert so["hold_all"]["pnl"] == 0.0 and so["summary"]["max_lots"] == 20
+    assert so["hold_all"]["shares"] == 30.0 and so["hold_all"]["cost"] == 3000.0 and so["hold_all"]["value"] == 3000.0
+    sh = sim["share"]["sell_only"]["hold_all"]                                 # 1 share per BUY: 30 shares at $100
+    assert (sh["shares"], sh["cost"], sh["value"]) == (30.0, 3000.0, 3000.0)
     assert sim["share"]["sell_only"]["summary"]["max_capital"] == 2000.0          # 20 shares at $100
+
+
+def test_sell_signal_labels_use_the_setup_before_the_sell_model_exists():
+    from backend.app.quant import accum as qa
+    top = np.zeros(40, dtype=bool)
+    top[[3, 4, 12, 30, 35]] = True
+    model = np.array([25, 33], dtype=np.int64)          # the SELL model decides from bar 20 on
+    sells = qa.label_sells(model, top, cooldown=2, active_from=20)
+    assert sells.tolist() == [3, 12, 25, 33]            # setup bars (cooldown 2) before 20, model decisions after
+    close = np.linspace(100, 139, 40)
+    label, resolved, _ = qa.next_sell_labels(close, sells, 0)
+    assert resolved[0] == 3 and resolved[5] == 12 and resolved[15] == 25 and np.isnan(label[34])

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api", tags=["analysis"])
 @router.get("/analysis/{symbol}")
 async def analysis(
     symbol: str,
-    range: str = Query("5Y", description="1D 5D 1M 3M 6M YTD 1Y 5Y MAX CUSTOM (same as the chart)"),
+    range: str = Query("5Y", description="1D 5D 1M 3M 6M YTD 1Y 3Y 5Y 10Y MAX CUSTOM (same as the chart)"),
     timeframe: str | None = Query("1Day", description="1Min 5Min 15Min 30Min 1Hour 4Hour 1Day 1Week"),
     start: str | None = Query(None, description="CUSTOM range start, YYYY-MM-DD"),
     end: str | None = Query(None, description="CUSTOM range end (inclusive), YYYY-MM-DD"),

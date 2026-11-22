@@ -10,7 +10,7 @@ import type { BacktestResult, BacktestSetups, SimSizing } from "../types/api";
 export type SellRule = "sell_only" | "with_bracket";
 
 export interface BacktestSettings {
-  n: number;              // most recent BUY decisions (1-100)
+  nCustom: number | null; // most recent BUY decisions (1-100); null = all available (default, max 100)
   setups: BacktestSetups; // rebound / trend / both
   minProb: number | null;     // BUY when P >= this, in % (0-100); null = the model's own threshold (default)
   sellMinProb: number | null; // SELL when P >= this, in %; null = the model's own threshold (default)
@@ -19,7 +19,7 @@ export interface BacktestSettings {
 }
 
 export const DEFAULT_BACKTEST: BacktestSettings = {
-  n: 30, setups: "both", minProb: null, sellMinProb: null, sizing: "usd", sell: "sell_only",
+  nCustom: null, setups: "both", minProb: null, sellMinProb: null, sizing: "usd", sell: "sell_only",
 };
 export const N_RANGE: [number, number] = [1, 100];
 const DEBOUNCE_MS = 250;
@@ -30,7 +30,8 @@ export const validProb = (p: number | null) => p === null || (Number.isFinite(p)
 export function useBacktest(runId: string | null, onError: (e: ApiError) => void) {
   const [settings, setSettingsState] = useState<BacktestSettings>(
     () => {
-      const s = { ...DEFAULT_BACKTEST, ...load<Partial<BacktestSettings>>("backtest", {}) };
+      const { n: _old, ...saved } = load<Partial<BacktestSettings> & { n?: number }>("backtest", {});
+      const s = { ...DEFAULT_BACKTEST, ...saved };   // an old fixed count ("n") starts as "all available"
       // 60% was the old fixed default, not a user choice: use the model's threshold instead
       return s.minProb === 60 ? { ...s, minProb: null } : s;
     });
@@ -47,7 +48,8 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
     });
   }, []);
 
-  const { n, setups, minProb, sellMinProb, sizing } = settings;
+  const { nCustom, setups, minProb, sellMinProb, sizing } = settings;
+  const n = nCustom ?? N_RANGE[1];   // all available = the most recent 100 at most
   useEffect(() => {
     if (!runId) {
       setResult(null);

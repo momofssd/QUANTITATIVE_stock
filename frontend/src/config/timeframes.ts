@@ -16,8 +16,8 @@ export const TF_UNIT: Record<Timeframe, string> = {
 
 export const RANGE_BUTTONS: { key: Exclude<RangeKey, "CUSTOM">; label: string }[] = [
   { key: "1D", label: "1D" }, { key: "5D", label: "5D" }, { key: "1M", label: "1M" }, { key: "3M", label: "3M" },
-  { key: "6M", label: "6M" }, { key: "YTD", label: "YTD" }, { key: "1Y", label: "1Y" }, { key: "5Y", label: "5Y" },
-  { key: "MAX", label: "Max" },
+  { key: "6M", label: "6M" }, { key: "YTD", label: "YTD" }, { key: "1Y", label: "1Y" }, { key: "3Y", label: "3Y" },
+  { key: "5Y", label: "5Y" }, { key: "10Y", label: "10Y" }, { key: "MAX", label: "Max" },
 ];
 
 /** Intervals offered for each range. */
@@ -29,14 +29,16 @@ export const RANGE_TFS: Record<RangeKey, Timeframe[]> = {
   "6M": ["1Hour", "4Hour", "1Day", "1Week"],
   "YTD": ["1Hour", "4Hour", "1Day", "1Week"],
   "1Y": ["4Hour", "1Day", "1Week"],
+  "3Y": ["1Day", "1Week", "1Month"],
   "5Y": ["1Day", "1Week", "1Month"],
+  "10Y": ["1Day", "1Week", "1Month"],
   "MAX": ["1Day", "1Week", "1Month"],
   "CUSTOM": TIMEFRAMES,
 };
 
 export const RANGE_DEFAULT_TF: Record<Exclude<RangeKey, "CUSTOM">, Timeframe> = {
   "1D": "1Min", "5D": "5Min", "1M": "1Hour", "3M": "1Day", "6M": "1Day",
-  "YTD": "1Day", "1Y": "1Day", "5Y": "1Week", "MAX": "1Week",
+  "YTD": "1Day", "1Y": "1Day", "3Y": "1Day", "5Y": "1Week", "10Y": "1Week", "MAX": "1Week",
 };
 
 /** Calendar days of older intraday data requested each time the chart is scrolled past its left edge. */

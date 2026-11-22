@@ -32,3 +32,4 @@ ALPACA_DATA_FEED=auto
 python -m pytest                    # backend, no network needed
 cd frontend; npm run typecheck      # frontend types
 ```
+"# QUANTITATIVE_stock" 

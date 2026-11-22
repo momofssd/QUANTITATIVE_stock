@@ -7,19 +7,25 @@
  * (quant/backtest.py + quant/portfolio.py); nothing is retrained here.
  */
 import { useEffect, useState } from "react";
-import { SETUP_LABEL } from "../../chart/markers";
+import { MARK, SETUP_LABEL } from "../../chart/markers";
 import { TF_LABEL } from "../../config/timeframes";
 import type { AnalysisApi } from "../../hooks/useAnalysis";
 import { N_RANGE, useBacktest, validN, validProb, type SellRule } from "../../hooks/useBacktest";
 import { price } from "../../lib/format";
 import type { ApiError } from "../../services/api";
-import type { BacktestResult, BacktestScenario, BacktestSetups, SetupName, SimRun, SimSizing } from "../../types/api";
+import type {
+  BacktestResult, BacktestScenario, BacktestSetups, BacktestVariant, SetupName, SimRun, SimSizing,
+} from "../../types/api";
 import { Elapsed } from "../analysis/AnalysisPanel";
-import { BySetup, EXIT_BY, SIM_LABEL, SIZING_LABEL } from "../analysis/SimulationPanel";
+import { BySetup, EXIT_BY, SIM_LABEL, SIM_RULE, SIZING_LABEL } from "../analysis/SimulationPanel";
 import { TrainingDates } from "../analysis/TrainingDates";
 import { dirCls, pct, span, usd } from "../analysis/util";
 
 const STRATEGY: Record<BacktestSetups, string> = { rebound: "Rebound", trend: "Trend", both: "Both" };
+/** Shares on hand: whole shares with "1 share per BUY", fractional with "$100 per BUY". */
+const shares = (v: number, sizing: SimSizing) =>
+  sizing === "share" ? v.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    : v.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 const money = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const signedPct = (v: number | null | undefined, d = 2) =>
   v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`;
@@ -68,22 +74,32 @@ function ThresholdField({ label, value, today, range, onChange }: {
   );
 }
 
-function Controls({ bt, today, ranges }: {
+function Controls({ bt, today, ranges, available }: {
   bt: ReturnType<typeof useBacktest>;
   today: { buy: number | null; sell: number | null };
-  ranges: BacktestResult["model_thresholds"] | undefined;
+  ranges: { buy: [number, number] | null; sell: [number, number] | null } | undefined;
+  available: number | null;   // decisions that qualify under the current strategy / setup / threshold
 }) {
   const s = bt.settings;
-  const [nText, setNText] = useState(String(s.n));
-  useEffect(() => setNText(String(s.n)), [s.n]);
+  // The field shows the number actually used: the setting (default 30) or all available, whichever is lower.
+  const want = s.nCustom ?? N_RANGE[1];
+  const used = available !== null ? Math.min(want, available) : want;
+  const [editing, setEditing] = useState(false);
+  const [nText, setNText] = useState(String(used));
+  useEffect(() => { if (!editing) setNText(String(used)); }, [used, editing]);
   const nOk = validN(Number(nText));
   return (
     <div className="bt-controls">
       <label className="bt-field">
         <span>Decisions</span>
         <input type="number" min={N_RANGE[0]} max={N_RANGE[1]} step={1} value={nText} className={nOk ? "" : "bad"}
-          onChange={(e) => { setNText(e.target.value); const v = Number(e.target.value); if (validN(v)) bt.setSettings({ n: v }); }} />
-        <small>most recent, 1–100</small>
+          onFocus={() => setEditing(true)} onBlur={() => setEditing(false)}
+          onChange={(e) => { setNText(e.target.value); const v = Number(e.target.value); if (validN(v)) bt.setSettings({ nCustom: v }); }} />
+        <small>
+          {s.nCustom === null ? "all available (max 100)"
+            : <>{available !== null && available < s.nCustom ? `all ${available} available` : "most recent"} ·{" "}
+              <button type="button" className="link" onClick={() => bt.setSettings({ nCustom: null })}>All</button></>}
+        </small>
       </label>
       <div className="bt-field">
         <span>Strategy</span>
@@ -141,7 +157,11 @@ function Blocks({ sc, run, sizing, barUnit }: { sc: BacktestScenario; run: SimRu
           <Stat label="Realized" value={usd(s.realized_pnl)} cls={dirCls(s.realized_pnl)} />
           <Stat label="Still held" value={s.open ? usd(s.open_pnl) : "none"} cls={dirCls(s.open_pnl)} sub="at the last close" />
           <Stat label="Max at work" value={money(s.max_capital)} sub={`${s.max_lots} lots at once · ${signedPct(s.return_pct, 1)} on it`} />
-          <Stat label="Same BUYs, never sold" value={usd(sc.hold_all.pnl)} cls={dirCls(sc.hold_all.pnl)} sub={`${lot} at the first BUY, held: ${usd(sc.buy_hold.pnl)}`} />
+          <Stat label="Same BUYs, never sold" value={`${usd(sc.hold_all.pnl)} (${signedPct(sc.hold_all.pnl_pct, 1)})`}
+            cls={dirCls(sc.hold_all.pnl)}
+            sub={`${shares(sc.hold_all.shares, sizing)} shares on hand · cost ${money(sc.hold_all.cost)} · worth ${money(sc.hold_all.value)}`} />
+          <Stat label="Buy & hold from the first BUY" value={usd(sc.buy_hold.pnl)} cls={dirCls(sc.buy_hold.pnl)}
+            sub={`${lot} bought ${sc.start_date}, never sold`} />
         </div>
       </div>
       <div className="bt-block">
@@ -178,7 +198,7 @@ function Blocks({ sc, run, sizing, barUnit }: { sc: BacktestScenario; run: SimRu
   );
 }
 
-function Compare({ r, sell, onPick }: { r: BacktestResult; sell: SellRule; onPick: (k: BacktestSetups) => void }) {
+function Compare({ r, v, onPick }: { r: BacktestResult; v: BacktestVariant; onPick: (k: BacktestSetups) => void }) {
   return (
     <div className="table-scroll">
       <table className="grid bt-compare">
@@ -189,14 +209,14 @@ function Compare({ r, sell, onPick }: { r: BacktestResult; sell: SellRule; onPic
           </tr>
         </thead>
         <tbody>
-          {r.compare.map((c) => {
-            const s = c[sell]?.summary;
+          {v.compare.map((c) => {
+            const s = c.summary;
             const active = c.setups === r.params.setups;
             return (
               <tr key={c.setups} className={`${active ? "active" : ""} clickable`} onClick={() => onPick(c.setups)}
                 title="Show this strategy">
                 <td className="l">{active ? <b>{STRATEGY[c.setups]}</b> : STRATEGY[c.setups]}
-                  <small> · {r.pool[c.setups].qualified} qualify</small></td>
+                  <small> · {v.pool[c.setups].qualified} qualify</small></td>
                 <td>{c.decisions}</td>
                 <td>{s ? pct(s.win_rate) : "—"}</td>
                 <td className={dirCls(s?.total_pnl)}>{s ? <b>{usd(s.total_pnl)}</b> : "—"}</td>
@@ -250,8 +270,11 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
   const r = a.result;
   const bt = useBacktest(r?.run_id ?? null, onError);
   const res = bt.result;
-  const sc = res?.result ?? null;
   const sell = bt.settings.sell;
+  // the strategy shown: sell-signal (its own BUY model) or profit-take / stop-loss
+  const v = res?.variants[sell] ?? null;
+  const sc = v?.result ?? null;
+  const buyKey = sell === "sell_only" ? "accum" : "short";
   const tfLabel = (TF_LABEL as Record<string, string>)[chart.timeframe] ?? chart.timeframe;
   const chartText = `${chart.symbol} · ${rangeLabel(chart.range)} · ${tfLabel} bars`;
   return (
@@ -292,28 +315,32 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
             <TrainingDates r={r} />
           </details>
 
-          <Controls bt={bt} ranges={res?.model_thresholds}
-            today={{ buy: r.targets.short.current?.threshold ?? null, sell: r.targets.tp_short.current?.threshold ?? null }} />
+          <Controls bt={bt} ranges={res && v ? { buy: v.model_thresholds, sell: res.sell_model_thresholds } : undefined}
+            available={v && res ? v.pool[res.params.setups].qualified : null}
+            today={{ buy: r.targets[buyKey].current?.threshold ?? null, sell: r.targets.tp_short.current?.threshold ?? null }} />
+          <p className="bt-strategy">
+            <b>{SIM_LABEL[sell]}:</b> {SIM_RULE[sell]}.
+          </p>
 
           {bt.error && (
             <div className="ta-stale">{bt.error} <button className="link" onClick={onTrain}>Retrain</button></div>
           )}
 
-          {res && (
-            <p className={`bt-pool ${res.pool[res.params.setups].qualified < res.params.n ? "warn" : ""}`}>
-              <b>{res.pool[res.params.setups].qualified}</b> BUY decisions qualify ({STRATEGY[res.params.setups].toLowerCase()}
+          {res && v && (
+            <p className="bt-pool">
+              <b>{v.pool[res.params.setups].qualified}</b> {MARK[buyKey].text} decisions qualify ({STRATEGY[res.params.setups].toLowerCase()}
               {res.params.setups === "both" ? " setups" : " setup"}, P ≥{" "}
-              {res.params.min_prob === null ? `the model's threshold (${pctRange(res.model_thresholds.buy)})`
+              {res.params.min_prob === null ? `the model's threshold (${pctRange(v.model_thresholds)})`
                 : `${Math.round(res.params.min_prob * 100)}%`}, one per {res.cooldown} bars) in {res.window.start} →{" "}
               {res.window.end}
               {sc ? <>; the most recent <b>{sc.decisions}</b> are simulated.</> : "."}
               {" "}SELL decisions: <b>{res.sell_decisions}</b> (P ≥{" "}
-              {res.params.sell_min_prob === null ? `the model's threshold (${pctRange(res.model_thresholds.sell)})`
+              {res.params.sell_min_prob === null ? `the model's threshold (${pctRange(res.sell_model_thresholds)})`
                 : `${Math.round(res.params.sell_min_prob * 100)}%`}).
-              {" "}Highest P: {pct(res.pool[res.params.setups].max_prob)}.
-              {res.pool[res.params.setups].qualified < res.params.n && (
-                <> Fewer than the {res.params.n} requested: lower the threshold, pick both setups, or train on a longer
-                  range (MAX) for more.</>
+              {" "}Highest P: {pct(v.pool[res.params.setups].max_prob)}.
+              {bt.settings.nCustom !== null && v.pool[res.params.setups].qualified < bt.settings.nCustom && (
+                <> All available decisions are used. For more: lower the threshold, pick both setups, or train on a longer
+                  range (MAX).</>
               )}
             </p>
           )}
@@ -322,19 +349,21 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
 
           {res && !sc && <p className="bt-none">No BUY decisions match these settings.</p>}
 
-          {res && sc && (
+          {res && v && sc && (
             <div className={bt.loading ? "bt-results busy" : "bt-results"}>
-              <Blocks sc={sc} run={sc[sell]} sizing={res.params.sizing} barUnit={res.bar_unit} />
+              <Blocks sc={sc} run={sc} sizing={res.params.sizing} barUnit={res.bar_unit} />
               <div className="ta-section">Win rate and P&amp;L by BUY setup</div>
-              <BySetup run={sc[sell]} />
+              <BySetup run={sc} />
               <div className="ta-section">Rebound vs trend vs both (same decisions count, threshold and lot size)</div>
-              <Compare r={res} sell={sell} onPick={(k) => bt.setSettings({ setups: k })} />
-              <div className="ta-section">Trades ({sc[sell].trades.length} lots, newest first)</div>
-              <Trades run={sc[sell]} barUnit={res.bar_unit} sizing={res.params.sizing} />
+              <Compare r={res} v={v} onPick={(k) => bt.setSettings({ setups: k })} />
+              <div className="ta-section">Trades ({sc.trades.length} lots, newest first)</div>
+              <Trades run={sc} barUnit={res.bar_unit} sizing={res.params.sizing} />
               <p className="ta-note">
                 How it works: P is the out-of-sample probability the walk-forward model gave each bar (it never saw that
-                bar's outcome). A BUY is any bar in the chosen setup with P at or above the BUY threshold, at most one
-                per {res.cooldown} bars; the most recent N are taken. A SELL is any interim-top bar with the SELL model's P
+                bar's outcome). The sell-signal strategy buys on the sell-signal BUY model ("BUY S": trained on whether
+                a lot is sold at a profit at the next SELL); the profit-take / stop-loss strategy on the BUY model
+                trained on its profit-take / stop-loss. A BUY is any bar in the chosen setup with that model's P at or
+                above the BUY threshold, at most one per {res.cooldown} bars; the most recent N are taken. A SELL is any interim-top bar with the SELL model's P
                 at or above the SELL threshold. Both thresholds are the model's own by default (its training base rate +
                 10 points, recomputed at every retrain - the same decisions as the analysis) unless you set a number.
                 Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at that close (also while holding); the
