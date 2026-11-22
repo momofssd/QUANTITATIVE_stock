@@ -1,6 +1,6 @@
 /**
  * Imperative wrapper around TradingView Lightweight Charts v4: a price pane (candles/OHLC/line + overlays +
- * volume) and RSI / MACD panes whose scrolling and crosshair are kept in sync.
+ * volume) and VIX / RSI / MACD panes whose scrolling and crosshair are kept in sync.
  *
  * React owns layout and state; this class owns the canvases. It never touches React state directly:
  * it reports back through callbacks (legend model, "need older bars").
@@ -23,7 +23,7 @@ import type { IndicatorKey } from "../config/indicators";
 import { barTime } from "../lib/format";
 import type { BarColumns, BarsPayload, ServerIndicatorParams, Timeframe } from "../types/api";
 import { bucketFor, inRegularSession } from "./buckets";
-import { buildLegend, type LegendModel } from "./legend";
+import { buildLegend, buildRangeChange, type LegendModel, type RangeChange } from "./legend";
 import { BandFillSeries } from "./bandSeries";
 import type { EntryMarker, PriceLineDef } from "./markers";
 import { COLORS, FONT_FAMILY, OVERLAYS, type OverlayDef } from "./theme";
@@ -37,6 +37,8 @@ type Point = any; // series data items differ per series type; built by point()
 export interface ChartEngineCallbacks {
   onLegend: (model: LegendModel | null) => void;
   onNeedOlder: () => void;
+  /** Gain / loss over the selected range (on new data and on every live tick). */
+  onRange?: (r: RangeChange | null) => void;
 }
 
 export interface SetDataOptions {
@@ -68,6 +70,7 @@ function baseOptions(): DeepPartial<ChartOptions> {
 
 export class ChartEngine {
   private readonly main: IChartApi;
+  private readonly vixChart: IChartApi;
   private readonly rsiChart: IChartApi;
   private readonly macdChart: IChartApi;
   private readonly charts: IChartApi[];
@@ -77,6 +80,13 @@ export class ChartEngine {
   private data: BarColumns | null = null;
   private params: ServerIndicatorParams | null = null;
   private meta: { key: string; symbol: string; intraday: boolean } | null = null;
+  /** The selected range: its name, start and the bar before it (base of the range's gain / loss). */
+  private rangeInfo: {
+    range: string; viewStart?: number; base?: { time: number; close: number; daily?: boolean } | null;
+    last?: { close: number } | null;
+  } | null = null;
+  /** A live tick moved the last bar since the data was set: it, not the server's official close, ends the range. */
+  private ticked = false;
   private timeIndex = new Map<number, number>();
   private hoverTime: number | undefined;
   private markers: EntryMarker[] = [];
@@ -107,16 +117,20 @@ export class ChartEngine {
   private readonly volSeries: AnySeries;
   private readonly bbFill: AnySeries; // shaded area between the Bollinger bands
   private readonly overlaySeries: (OverlayDef & { series: AnySeries })[];
+  /** CBOE VIX daily close (light pink) in its own pane above RSI. */
+  private readonly vixSeries: AnySeries;
   private readonly rsiSeries: AnySeries;
   private readonly macdHist: AnySeries;
   private readonly macdLine: AnySeries;
   private readonly macdSignal: AnySeries;
 
-  constructor(els: { main: HTMLElement; rsi: HTMLElement; macd: HTMLElement }, private readonly cb: ChartEngineCallbacks) {
+  constructor(els: { main: HTMLElement; vix: HTMLElement; rsi: HTMLElement; macd: HTMLElement },
+    private readonly cb: ChartEngineCallbacks) {
     this.main = createChart(els.main, baseOptions());
+    this.vixChart = createChart(els.vix, baseOptions());
     this.rsiChart = createChart(els.rsi, baseOptions());
     this.macdChart = createChart(els.macd, baseOptions());
-    this.charts = [this.main, this.rsiChart, this.macdChart];
+    this.charts = [this.main, this.vixChart, this.rsiChart, this.macdChart];
 
     // Created before the price series so the shading is drawn underneath the candles.
     this.bbFill = this.main.addCustomSeries(new BandFillSeries(), {
@@ -137,6 +151,16 @@ export class ChartEngine {
         autoscaleInfoProvider: this.autoscale,
       }),
     }));
+
+    this.vixSeries = this.vixChart.addLineSeries({
+      color: COLORS.vix, lineWidth: 2, priceLineVisible: false,
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    });
+    // 20 = elevated fear, 30 = high fear (reference lines, like RSI's 70 / 30)
+    for (const level of [20, 30]) {
+      this.vixSeries.createPriceLine({ price: level, color: "#bbb", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+    }
+    this.vixChart.priceScale("right").applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
 
     this.rsiSeries = this.rsiChart.addLineSeries({ color: COLORS.rsi, lineWidth: 2, priceLineVisible: false });
     for (const level of [70, 30]) {
@@ -267,6 +291,7 @@ export class ChartEngine {
 
     const pairs: [IChartApi, () => AnySeries, string][] = [
       [this.main, () => this.priceSeries, "close"],
+      [this.vixChart, () => this.vixSeries, "vix"],
       [this.rsiChart, () => this.rsiSeries, "rsi"],
       [this.macdChart, () => this.macdLine, "macd"],
     ];
@@ -331,6 +356,7 @@ export class ChartEngine {
       [this.volSeries, "vol"],
       [this.bbFill, "bbFill"],
       ...this.overlaySeries.map((o): [AnySeries, PointKind] => [o.series, o.col]),
+      [this.vixSeries, "vix"],
       [this.rsiSeries, "rsi"],
       [this.macdHist, "macdHist"],
       [this.macdLine, "macd"],
@@ -352,12 +378,16 @@ export class ChartEngine {
     this.data = cols;
     this.params = payload.params;
     this.meta = { key, symbol: payload.symbol, intraday: payload.intraday };
+    this.rangeInfo = { range: payload.range, viewStart: payload.view_start, base: payload.range_base,
+      last: payload.range_last };
+    this.ticked = false;
     this.timeIndex = new Map((cols?.time ?? []).map((t, i) => [t, i]));
 
     if (!cols || !n) {
       this.seriesPlan().forEach(([s]) => s.setData([]));
       this.applyMarkers();
       this.emitLegend();
+      this.emitRange();
       return;
     }
 
@@ -385,6 +415,7 @@ export class ChartEngine {
       this.applyMarkers();
     }
     this.emitLegend();
+    this.emitRange();
   }
 
   /**
@@ -419,6 +450,8 @@ export class ChartEngine {
       this.seriesPlan().forEach(([s, kind]) => s.update(this.point(i, kind)));
     }
     if (this.hoverTime === undefined) this.emitLegend();
+    this.ticked = true;
+    this.emitRange();
     return true;
   }
 
@@ -468,20 +501,29 @@ export class ChartEngine {
     }
   }
 
-  /** Show/hide overlays and volume; the RSI/MACD panes are shown/hidden by React. */
+  /** Show/hide overlays and volume; the VIX / RSI / MACD panes are shown/hidden by React. */
   setIndicators(enabled: Set<IndicatorKey>): void {
     this.enabled = new Set(enabled);
     this.overlaySeries.forEach((o) => o.series.applyOptions({ visible: this.enabled.has(o.key) }));
     this.volSeries.applyOptions({ visible: this.enabled.has("volume") });
     this.bbFill.applyOptions({ visible: this.enabled.has("bb") });
     this.applyPriceMargins();
-    // Only the bottom-most visible pane shows the time axis.
-    const bottom = this.enabled.has("macd") ? this.macdChart : this.enabled.has("rsi") ? this.rsiChart : this.main;
+    // Only the bottom-most visible pane shows the time axis (panes: price, VIX, RSI, MACD).
+    const bottom = this.enabled.has("macd") ? this.macdChart : this.enabled.has("rsi") ? this.rsiChart
+      : this.enabled.has("vix") ? this.vixChart : this.main;
     this.charts.forEach((c) => c.applyOptions({ timeScale: { visible: c === bottom } }));
     this.emitLegend();
   }
 
   // ---------------------------------------------------------------- legend
+  private emitRange(): void {
+    const d = this.data;
+    const r = this.rangeInfo;
+    const last = !this.ticked && r?.last ? r.last.close : undefined;
+    this.cb.onRange?.(d && r && this.meta && d.time.length
+      ? buildRangeChange(d, r.range, r.viewStart, r.base, this.meta.intraday, last) : null);
+  }
+
   private emitLegend(idx?: number): void {
     const d = this.data;
     if (!d || !this.meta || !this.params || !d.time.length) {

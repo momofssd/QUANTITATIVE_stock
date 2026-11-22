@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.alpaca_api import feeds, trading
 from backend.app.services import bars_service, quote_service
+from backend.app.yahoo_api import client as yahoo
 
 TF_MIN = bars_service.TIMEFRAME_MINUTES
 
@@ -32,6 +33,12 @@ def synthetic_bars(timeframe: str, start: str, end: str | None = None, max_bars:
     bars = [{"t": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "o": float(c - 0.1), "h": float(c + 0.4), "l": float(c - 0.4),
              "c": float(c), "v": 1000 + i, "vw": float(c), "n": 10} for i, (t, c) in enumerate(zip(idx, closes))]
     return bars[-max_bars:]
+
+
+def fake_vix(start: str) -> pd.Series:
+    """Business-day VIX closes from `start`: 10 + (day of the month), so a bar's value names its day."""
+    idx = pd.bdate_range(max(pd.Timestamp(start), pd.Timestamp("2016-01-01")), pd.Timestamp.now().normalize())
+    return pd.Series(10.0 + idx.day, index=idx)
 
 
 @pytest.fixture
@@ -66,6 +73,7 @@ def fake_alpaca(monkeypatch):
     monkeypatch.setattr(feeds, "get_bars", get_bars)
     monkeypatch.setattr(feeds, "get_snapshot", get_snapshot)
     monkeypatch.setattr(feeds, "feed_label", lambda: "sip+iex")
+    monkeypatch.setattr(yahoo, "fetch_vix", fake_vix)   # no network in tests
     monkeypatch.setattr(trading, "get_asset", get_asset)
     monkeypatch.setattr(trading, "list_assets", list_assets)
     quote_service._daily_cache.clear()

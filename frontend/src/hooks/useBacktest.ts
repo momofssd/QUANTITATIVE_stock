@@ -16,11 +16,15 @@ export interface BacktestSettings {
   sellMinProb: number | null; // SELL when P >= this, in %; null = the model's own threshold (default)
   sizing: SimSizing;      // $100 or 1 share per BUY
   sell: SellRule;         // sell rule shown
+  maxShares: number | null; // sell-signal strategy: most shares held at once; null = no limit (default)
 }
 
 export const DEFAULT_BACKTEST: BacktestSettings = {
-  nCustom: null, setups: "both", minProb: null, sellMinProb: null, sizing: "usd", sell: "sell_only",
+  nCustom: null, setups: "both", minProb: null, sellMinProb: null, sizing: "usd", sell: "sell_only", maxShares: null,
 };
+export const MAX_SHARES_LIMIT = 1_000_000;
+export const validMaxShares = (v: number | null) =>
+  v === null || (Number.isFinite(v) && v > 0 && v <= MAX_SHARES_LIMIT);
 export const N_RANGE: [number, number] = [1, 100];
 const DEBOUNCE_MS = 250;
 
@@ -48,14 +52,14 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
     });
   }, []);
 
-  const { nCustom, setups, minProb, sellMinProb, sizing } = settings;
+  const { nCustom, setups, minProb, sellMinProb, sizing, maxShares } = settings;
   const n = nCustom ?? N_RANGE[1];   // all available = the most recent 100 at most
   useEffect(() => {
     if (!runId) {
       setResult(null);
       return;
     }
-    if (!validN(n) || !validProb(minProb) || !validProb(sellMinProb)) return;
+    if (!validN(n) || !validProb(minProb) || !validProb(sellMinProb) || !validMaxShares(maxShares)) return;
     const id = window.setTimeout(async () => {
       ctrl.current?.abort();
       const c = new AbortController();
@@ -67,6 +71,7 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
           n, setups, sizing,
           min_prob: minProb === null ? undefined : minProb / 100,
           sell_min_prob: sellMinProb === null ? undefined : sellMinProb / 100,
+          max_shares: maxShares ?? undefined,
         }, c.signal));
       } catch (e) {
         if (isAbort(e)) return;
@@ -79,7 +84,7 @@ export function useBacktest(runId: string | null, onError: (e: ApiError) => void
       }
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [runId, n, setups, minProb, sellMinProb, sizing, onError]);
+  }, [runId, n, setups, minProb, sellMinProb, sizing, maxShares, onError]);
 
   return { settings, setSettings, result, loading, error };
 }

@@ -59,3 +59,36 @@ def fetch_factors(start: str) -> pd.DataFrame:
         frame = frame.sort_index().ffill()
         _cache.update(at=time.time(), start=start, frame=frame)
         return frame.copy()
+
+
+VIX_TTL = 15 * 60  # seconds: today's VIX close moves during the session
+_vix_cache: dict = {"at": 0.0, "start": None, "series": None}
+_vix_lock = threading.Lock()
+
+
+def fetch_vix(start: str) -> pd.Series:
+    """Daily ^VIX closes from `start` (YYYY-MM-DD), indexed by (naive) trading date - the chart's VIX line.
+
+    Cached for VIX_TTL. Raises ApiError(502) if Yahoo is unreachable or returns nothing.
+    """
+    with _vix_lock:
+        hit = _vix_cache["series"]
+        if hit is not None and _vix_cache["start"] <= start and time.time() - _vix_cache["at"] < VIX_TTL:
+            return hit.loc[start:].copy()
+        try:
+            import yfinance as yf
+
+            raw = yf.download(FACTORS["vix"][0], start=start, interval="1d", auto_adjust=False, progress=False,
+                              threads=False)
+        except Exception as exc:  # noqa: BLE001 - network / parsing issues inside yfinance
+            raise ApiError(502, f"Yahoo Finance request failed: {exc}") from exc
+        if raw is None or raw.empty or "Close" not in raw:
+            raise ApiError(502, "Yahoo Finance returned no VIX data.")
+        close = raw["Close"]
+        if isinstance(close, pd.DataFrame):  # newer yfinance: one column per ticker even for one ticker
+            close = close.iloc[:, 0]
+        series = close.dropna().astype(float)
+        series.index = pd.to_datetime(series.index).tz_localize(None).normalize()
+        series = series.sort_index()
+        _vix_cache.update(at=time.time(), start=start, series=series)
+        return series.copy()

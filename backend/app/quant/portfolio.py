@@ -9,6 +9,8 @@ Rules (long only, before costs):
     when its holding window (20 sessions) ends - whichever comes first, if before the next SELL (a profit-take /
     stop-loss is intrabar, so before a SELL at the same bar's close; filled at the level or at the open on a gap)
   - lots still held at the end are valued at the last close ("open")
+  - optional cap (max_shares): a BUY that would take the shares held above the cap is skipped (logged in
+    "skipped"); holdings drop when lots are sold, so BUYs resume after the next SELL
 A SELL and a BUY on the same bar: the SELL sells what was held before; the BUY then opens a new lot.
 Win rate and P&L are counted per lot, so they split exactly by the setup of the BUY that bought the lot.
 """
@@ -48,6 +50,28 @@ def _lot(b: dict, sells: list[dict], last: dict, use_bracket: bool, sizing: str)
         "bars": at["i"] - b["i"], "pnl": round(pnl, 2), "pnl_pct": round(pnl / cost * 100, 2),
         "_buy_i": b["i"], "_exit_i": at["i"],
     }
+
+
+def admit(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str,
+          max_shares: float | None) -> tuple[list[dict], list[dict]]:
+    """The BUYs actually bought under a cap on shares held at once (None = no cap), and the ones skipped
+    (chronological). Lots sold on a bar (SELL at its close, profit-take / stop-loss intrabar) are gone before a
+    BUY at that bar's close."""
+    if max_shares is None:
+        return list(buys), []
+    sells = sorted(sells, key=lambda s: s["i"])
+    taken, skipped, held = [], [], []          # held: (exit bar, still open at the end, qty)
+    for b in buys:
+        lot = _lot(b, sells, last, use_bracket, sizing)
+        on_hand = sum(q for x, still, q in held if still or x > b["i"])
+        if on_hand + lot["qty"] > max_shares + 1e-9:
+            skipped.append({"time": b["time"], "date": b["date"], "price": round(b["price"], 2),
+                            "setup": b.get("setup", ""), "prob": b.get("prob"), "qty": lot["qty"],
+                            "held": round(on_hand, 6)})
+            continue
+        taken.append(b)
+        held.append((lot["_exit_i"], lot["status"] == "open", lot["qty"]))
+    return taken, skipped
 
 
 def _tally(lots: list[dict]) -> dict:
@@ -104,33 +128,38 @@ def _ytd(lots: list[dict], year_start: dict) -> dict:
     }
 
 
-def _peak(lots: list[dict]) -> tuple[int, float]:
-    """Most lots / most money held at once (exits on a bar happen before a BUY at that bar's close)."""
-    events = [(t["_buy_i"], 1, 1, t["cost"]) for t in lots]
-    events += [(t["_exit_i"], 0, -1, -t["cost"]) for t in lots if t["status"] == "closed"]
+def _peak(lots: list[dict]) -> tuple[int, float, float]:
+    """Most lots / money / shares held at once (exits on a bar happen before a BUY at that bar's close)."""
+    events = [(t["_buy_i"], 1, 1, t["cost"], t["qty"]) for t in lots]
+    events += [(t["_exit_i"], 0, -1, -t["cost"], -t["qty"]) for t in lots if t["status"] == "closed"]
     held = peak = 0
-    money = peak_money = 0.0
-    for _, _, d, c in sorted(events):
+    money = peak_money = shares = peak_shares = 0.0
+    for _, _, d, c, q in sorted(events):
         held += d
         money += c
+        shares += q
         peak = max(peak, held)
         peak_money = max(peak_money, money)
-    return peak, round(peak_money, 2)
+        peak_shares = max(peak_shares, shares)
+    return peak, round(peak_money, 2), round(peak_shares, 6)
 
 
 def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str = "usd",
-        year_start: dict | None = None) -> dict:
+        year_start: dict | None = None, max_shares: float | None = None) -> dict:
     """buys:  {i, time, date, price, setup, exit: {i, time, date, price, reason} | None}  (exit = first
               profit-take / stop-loss hit after the entry, no time limit)
     sells: {i, time, date, price}
     last:  {i, time, date, price} = the last bar
+    max_shares: most shares held at once (None = no cap); BUYs over it are skipped
     """
     sells = sorted(sells, key=lambda s: s["i"])
-    lots = [_lot(b, sells, last, use_bracket, sizing) for b in buys]
-    peak, peak_money = _peak(lots)
+    taken, skipped = admit(buys, sells, last, use_bracket, sizing, max_shares)
+    lots = [_lot(b, sells, last, use_bracket, sizing) for b in taken]
+    peak, peak_money, peak_shares = _peak(lots)
     summary = _tally(lots)
     summary |= {
-        "max_lots": peak, "max_capital": peak_money,
+        "max_lots": peak, "max_capital": peak_money, "max_shares_held": peak_shares,
+        "max_shares": max_shares, "skipped": len(skipped),
         # return on the most money that was ever at work at the same time
         "return_pct": round(summary["total_pnl"] / peak_money * 100, 2) if peak_money else None,
         "sells_used": len({t["sell_time"] for t in lots if t["reason"] == SELL}),
@@ -140,27 +169,30 @@ def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizi
     by_setup = {name: _tally([t for t in lots if t["setup"] == name]) for name in SETUPS}
     for t in lots:
         del t["_buy_i"], t["_exit_i"]
-    return {"trades": lots[::-1], "summary": summary, "by_setup": by_setup}   # newest lot first
+    # newest first
+    return {"trades": lots[::-1], "summary": summary, "by_setup": by_setup, "skipped": skipped[::-1]}
 
 
 def _variant(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str,
-             year_start: dict | None = None, limit: int | None = LISTED) -> dict | None:
-    """One strategy over the `limit` most recent BUYs (None = all given): the run + its period, counts, baselines."""
+             year_start: dict | None = None, limit: int | None = LISTED, max_shares: float | None = None) -> dict | None:
+    """One strategy over the `limit` most recent BUYs (None = all given): the run + its period, counts, baselines.
+    With a cap (max_shares) the baselines use the BUYs actually bought."""
     if limit is not None:
         buys = buys[-limit:]
     if not buys:
         return None
     start = buys[0]
     sells = [s for s in sells if s["i"] >= start["i"]]
+    taken, _ = admit(buys, sells, last, use_bracket, sizing, max_shares)
     q0 = _qty(start["price"], sizing)
-    cost_all = sum(_qty(b["price"], sizing) * b["price"] for b in buys)
-    shares_all = sum(_qty(b["price"], sizing) for b in buys)
-    never = sum(_qty(b["price"], sizing) * (last["price"] - b["price"]) for b in buys)
+    cost_all = sum(_qty(b["price"], sizing) * b["price"] for b in taken)
+    shares_all = sum(_qty(b["price"], sizing) for b in taken)
+    never = sum(_qty(b["price"], sizing) * (last["price"] - b["price"]) for b in taken)
     return {
-        **run(buys, sells, last, use_bracket, sizing, year_start),
+        **run(buys, sells, last, use_bracket, sizing, year_start, max_shares),
         "start_time": start["time"], "start_date": start["date"], "buys": len(buys), "sells": len(sells),
         # baselines: the same BUYs never sold; one lot bought at the first BUY and held
-        "hold_all": {"pnl": round(never, 2), "pnl_pct": round(never / cost_all * 100, 2),
+        "hold_all": {"pnl": round(never, 2), "pnl_pct": round(never / cost_all * 100, 2) if cost_all else None,
                      # every lot kept: shares on hand, what they cost, what they are worth at the last close
                      "shares": round(shares_all, 6), "cost": round(cost_all, 2),
                      "value": round(shares_all * last["price"], 2)},

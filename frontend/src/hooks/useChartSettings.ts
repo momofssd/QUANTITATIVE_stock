@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useReducer } from "react";
 import {
-  cloneParams, DEFAULT_ENABLED, LEGACY_KEYS, PRESETS,
+  cloneParams, DEFAULT_ENABLED, LEGACY_KEYS, NEW_DEFAULTS, PRESETS,
   type IndicatorKey, type IndicatorParams,
 } from "../config/indicators";
 import { effectiveTimeframe, RANGE_TFS } from "../config/timeframes";
@@ -52,9 +52,21 @@ function initial(): ChartSettingsState {
     to: url.get("to") || "",
     chartType: load<ChartType>("type", "candles"),
     extended: load("extended", false),
-    enabled: [...new Set(load<string[]>("indicators", DEFAULT_ENABLED).map((k) => LEGACY_KEYS[k] ?? (k as IndicatorKey)))],
+    enabled: withNewDefaults([...new Set(load<string[]>("indicators", DEFAULT_ENABLED).map((k) => LEGACY_KEYS[k] ?? (k as IndicatorKey)))]),
     overrides: load("indParams", {}),
   };
+}
+
+/** Lines added to the defaults later (VIX, VWAP) are switched on once for settings saved before they existed;
+ *  after that they can be turned off in the indicator menu like any other line. */
+function withNewDefaults(enabled: IndicatorKey[]): IndicatorKey[] {
+  const done = new Set(load<string[]>("defaultsAdded", load<boolean>("vixAdded", false) ? ["vix"] : []));
+  const add = NEW_DEFAULTS.filter((k) => !done.has(k));
+  if (!add.length) return enabled;
+  const next = [...new Set([...enabled, ...add])];
+  save("indicators", next);   // saved at once, so a second initialisation (React StrictMode) sees the same list
+  save("defaultsAdded", [...done, ...add]);
+  return next;
 }
 
 function reducer(s: ChartSettingsState, a: Action): ChartSettingsState {

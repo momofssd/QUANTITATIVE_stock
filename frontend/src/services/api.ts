@@ -75,7 +75,7 @@ export const api = {
     get<AnalysisResult>(`/api/analysis/${encodeURIComponent(symbol)}`, { ...query }, signal),
   /** Backtest scenarios on a training run (run_id from the analysis). */
   backtest: (runId: string, q: { n: number; setups: BacktestSetups; min_prob?: number; sell_min_prob?: number;
-    sizing: SimSizing },
+    sizing: SimSizing; max_shares?: number },
     signal?: AbortSignal) =>
     get<BacktestResult>(`/api/backtest/${encodeURIComponent(runId)}`, { ...q }, signal),
   /** Today's 5-minute check for the current K line (cheap). */

@@ -147,7 +147,7 @@ uvicorn loads.
 
 | File | Contents |
 |---|---|
-| `client.py` | `FACTORS` (spy `SPY`, qqq `QQQ`, vix `^VIX`, oil `CL=F`, gasoline `RB=F`, rate `^IRX`) and `fetch_factors(start)`: daily **raw** closes via yfinance (`auto_adjust=False`: Yahoo's dividend-adjusted closes differ by ~$0.0002 on every download, which made identical trainings disagree; raw closes are identical every time), forward-filled, cached in memory for 4 h. Synchronous, so call it in a worker thread. Raises `ApiError(502)` when Yahoo fails. |
+| `client.py` | `FACTORS` (spy `SPY`, qqq `QQQ`, vix `^VIX`, oil `CL=F`, gasoline `RB=F`, rate `^IRX`) and `fetch_factors(start)`: daily **raw** closes via yfinance (`auto_adjust=False`: Yahoo's dividend-adjusted closes differ by ~$0.0002 on every download, which made identical trainings disagree; raw closes are identical every time), forward-filled, cached in memory for 4 h. Synchronous, so call it in a worker thread. Raises `ApiError(502)` when Yahoo fails. `fetch_vix(start)`: daily ^VIX raw closes only, for the chart's VIX line, cached 15 min. |
 
 ### `quant/` (pure functions, no I/O)
 
@@ -180,7 +180,7 @@ uvicorn loads.
 | File | Contents |
 |---|---|
 | `frames.py` | `bars_frame()`: Alpaca bar dicts → UTC-indexed DataFrame (`open high low close volume bar_vwap trades`). |
-| `bars_service.py` | `build_bars(BarsRequest)`, the chart's data: range → display window (`display_window`); daily+ always loads full history from 2016; intraday loads the window (+ `load_from` for scroll-back); warm-up days from the indicator lengths (`warmup_days`); regular-session filter unless extended; indicators, trim, `view_start` / `has_more` / `truncated`, column-oriented JSON. Constants `TIMEFRAME_MINUTES`, `RANGE_DEFAULT_TF`, `SESSION_RANGES` (1D, 5D), `MAX_BARS`. Shared helpers `resolve_range()` (validate range + interval) and `fetch_frame()` (an interval's bars exactly as the chart shows them). |
+| `bars_service.py` | `build_bars(BarsRequest)`, the chart's data: range → display window (`display_window`); daily+ always loads full history from 2016; intraday loads the window (+ `load_from` for scroll-back); warm-up days from the indicator lengths (`warmup_days`); regular-session filter unless extended; indicators, trim, `view_start` / `has_more` / `truncated`, column-oriented JSON. Constants `TIMEFRAME_MINUTES`, `RANGE_DEFAULT_TF`, `SESSION_RANGES` (1D, 5D), `MAX_BARS`. Shared helpers `resolve_range()` (validate range + interval) and `fetch_frame()` (an interval's bars exactly as the chart shows them). Column `vix` (`vix_column()`): the VIX daily close for each bar's day (daily, intraday), week or month (latest close so far for the current one), fetched from Yahoo in parallel with the Alpaca bars; if Yahoo fails the column is empty and the bars still load. `vwap` on daily+ bars: anchored at the start of the selected range (`anchored_vwap`: cumulative bar VWAP x volume / volume; intraday stays per session). `range_base`: the bar before the selected range (intraday: the previous session's official daily close, `official_close_before` on the quote's cached daily bars); `range_last` (intraday, regular hours): the session's official close - the range's gain / loss ends there until a live tick moves the last bar. |
 | `quote_service.py` | `build_quote()`: asset + snapshot + ~1 y daily bars (cached 15 s) → price, change vs previous close, day OHLCV, 52-week range, average volumes. `day_and_prev()` handles pre-market (latest daily bar is yesterday's session). |
 | `search_service.py` | `rank()`: exact symbol, then symbol prefix, then name contains. `search()`. |
 | `analysis_service.py` | `run_analysis(AnalysisRequest(symbol, range, timeframe, start, end, extended, tp_atr, sl_atr, bracket))`: the chart's bars + the stock's daily bars + Yahoo factors → `compute()` in a worker thread → payload ([section 8](#8-short-term-buy--sell-analysis)). `eval_window()` → `(r0, w0, w1)` = chart range and model-check window. The UI always sends `refresh=true` (each click retrains); results are also cached 10 minutes per request. Each run gets a `run_id`; its backtest data (every BUY-setup bar of the model-check window with its out-of-sample P and first profit-take / stop-loss hit, the SELL decisions, the last bar, the year start) is kept in memory (`_runs`, the last 30 runs) for `run_backtest()`. |
@@ -319,7 +319,7 @@ table is told to re-read via a version counter.
 |---|---|
 | `types/api.ts` | Backend response types (Quote, BarsPayload, BarColumns, Health, Clock, Asset), live message types (StreamStatus, TickMessage, QuoteMessage, BarMessage) and analysis types (AnalysisResult, TargetResult, EntrySignal, CurrentSignal, RangeStats, Simulation, ...). |
 | `config/timeframes.ts` | `TF_LABEL`, `TF_UNIT`, `RANGE_BUTTONS`, `RANGE_TFS` (intervals allowed per range), `RANGE_DEFAULT_TF`, `OLDER_STEP_DAYS` (scroll-back step), `isIntraday`, `effectiveTimeframe`. |
-| `config/indicators.ts` | `IndicatorKey`, `IndicatorParams`, `PRESETS` per interval, `INDICATOR_ROWS` (menu layout), `DEFAULT_ENABLED`, get/setField, `validateField`, `paramQuery` (→ `/api/bars` query). |
+| `config/indicators.ts` | `IndicatorKey`, `IndicatorParams`, `PRESETS` per interval, `INDICATOR_ROWS` (menu layout), `DEFAULT_ENABLED` (volume, SMA 1-2, VWAP, VIX, RSI, MACD), `NEW_DEFAULTS` (VIX, VWAP: switched on once for settings saved before they were defaults, `useChartSettings`), get/setField, `validateField`, `paramQuery` (→ `/api/bars` query). |
 | `config/feeds.ts` | feed display names |
 | `lib/format.ts` | price / pct / volume / compact formatting, ET date formatting, `barTime` (chart time → text), `etEpoch` (ISO → chart time) |
 | `lib/storage.ts` | localStorage load / save with `qtm.` prefix, failure-safe |
@@ -332,8 +332,8 @@ table is told to re-read via a version counter.
 
 | File | Contents |
 |---|---|
-| `ChartEngine.ts` | Lightweight Charts wrapper: price pane (candles / OHLC / line) + overlays + volume, RSI pane, MACD pane; scroll + crosshair sync; `setData` (incremental tail update, prepend-with-stable-view for scroll-back, full replace for new lengths), `applyTick` (live candle), `setType`, `setIndicators`, `onNeedOlder` when scrolled past the left edge, `onLegend` callback, `setMarkers` / `setPriceLines`. View controls: `zoom(factor)` zooms time and price around the centre of the view (price zoom = an `autoscaleInfoProvider` on every price-pane series that scales the visible candles' low–high range around its middle, so they stay vertically centred); `fitView()` returns to the selected range with auto-scaled prices on every pane (also done on every new symbol / range / interval, so a dragged price axis never carries over). Price margins are symmetric: the candles sit in the middle of the area above the volume band. |
-| `legend.ts` | `buildLegend()`: pure legend model (OHLC, change, indicator values) |
+| `ChartEngine.ts` | Lightweight Charts wrapper: price pane (candles / OHLC / line) + overlays + volume, RSI pane, MACD pane; scroll + crosshair sync; `setData` (incremental tail update, prepend-with-stable-view for scroll-back, full replace for new lengths), `applyTick` (live candle), `setType`, `setIndicators`, `onNeedOlder` when scrolled past the left edge, `onLegend` callback, `setMarkers` / `setPriceLines`. View controls: `zoom(factor)` zooms time and price around the centre of the view (price zoom = an `autoscaleInfoProvider` on every price-pane series that scales the visible candles' low–high range around its middle, so they stay vertically centred); `fitView()` returns to the selected range with auto-scaled prices on every pane (also done on every new symbol / range / interval, so a dragged price axis never carries over). Price margins are symmetric: the candles sit in the middle of the area above the volume band. **VIX pane**: its own pane between the price pane and RSI (`vixChart`, light-pink line `COLORS.vix`, dashed reference lines at 20 and 30), synced like RSI / MACD; the bottom-most visible pane shows the time axis. Indicator key `vix` (menu: Lower panes), on by default (switched on once for settings saved before it existed), value in the legend. |
+| `legend.ts` | `buildLegend()`: pure legend model (OHLC, change, indicator values incl. VIX); `buildRangeChange()`: the selected range's gain / loss (latest close vs the close before the range - an official daily close on intraday charts, the first bar's open when nothing earlier is loaded, e.g. Max) |
 | `buckets.ts` | `bucketFor()`: which bar a live trade belongs to; `inRegularSession()` |
 | `theme.ts` | colours and `OVERLAYS` (series definitions with labels from params). Bollinger: bold cyan bands + dashed middle; VWAP: dashed pink. |
 | `bandSeries.ts` | `BandFillSeries`: custom series that shades the area between the Bollinger bands (the library has no fill-between); created before the price series so it sits under the candles. |
@@ -371,24 +371,25 @@ table is told to re-read via a version counter.
 | `sidebar/KeyStatistics.tsx` | open, prev close, ranges, volumes, VWAP + RangeBar ×2 |
 | `sidebar/RangeBar.tsx` | low–high track with price marker |
 | `sidebar/DataSource.tsx` | provider, feed, stream state, account, next open / close |
-| `chart/ChartCard.tsx` | card frame + status note, ChartToolbar, PriceChart, the **Find entry points** button (retrains on the chart as shown) |
+| `chart/ChartCard.tsx` | card frame + status note, ChartToolbar, PriceChart, the **Find entry points** button (retrains on the chart as shown); title badge with the **selected range's gain / loss** (e.g. "1Y −49.00 (−12.40%) from 395.23 · close 11/20/2025"), from the engine's `onRange` callback, so live ticks update it |
 | `chart/ChartToolbar.tsx` | ranges, interval, chart type, IndicatorMenu, extended hours, custom dates |
 | `chart/IndicatorMenu.tsx` | toggles + editable lengths; per-field validation; debounced commit that captures the interval at edit time |
 | `chart/PriceChart.tsx` | hosts ChartEngine (create / dispose), forwards props, exposes `applyTick` via ref, renders legend, panes, loading / empty overlay, and the view buttons on the price pane: **− / +** (zoom time and price together) and **Fit** (selected range, prices re-centred) |
 | `chart/ChartLegend.tsx` | renders the legend model |
 | `history/HistoryTable.tsx` | paged OHLCV table (newest first) + CSV button |
-| `analysis/AnalysisPanel.tsx` | "Short-term BUY & SELL Analysis" card: progress, stale notice, marker legend, Current K panel, reading guide, BUY + SELL cards, the $100 simulation, the two decision tables, factor relations, method |
+| `analysis/AnalysisPanel.tsx` | "Short-term BUY & SELL Analysis" card: progress, stale notice, marker legend, Current K panel, reading guide, BUY + SELL cards, a pointer to the decision logs (now on the Backtests page), factor relations, method |
 | `analysis/TrainingDates.tsx` | "Training dates for this run" (top of the results, after every retrain): BUY / SELL today's model and first walk-forward model date ranges (bars, years or sessions), retrain count, data / daily / Yahoo date ranges, model-check and chart range, short-history warning (< 1 year), disclaimer |
 | `analysis/MomentumBox.tsx` | "Momentum vs previous K lines": P of BUY / BUY S / SELL on the last 10 K lines (today's models) as sparklines vs the threshold, change vs the previous K and 5 K ago, status (approaching / moving away / flat / now), overall verdict (toward BUY / toward SELL / no clear shift), RSI / MACD price momentum |
 | `analysis/CurrentKPanel.tsx` | current K line: momentum box, BUY / SELL decision combined with the 5-minute check; BUY plan (entry, profit-take, stop-loss with what set them, chase limit) vs the live price; setup checklists |
 | `analysis/TargetCard.tsx` | BUY or SELL: Fixed ATR / Optimized ATR level editor + exit rule (BUY), Optimized ATR section (`OptimizationPanel.tsx`: combination in use now, optimized vs fixed vs best-in-hindsight, every combination's profit, when the choice changed), open trade, **This chart range** (decisions, justified vs setup-only vs any bar, BUY trades vs any-bar entry, buy & hold), **Model check** over ≥ 1,260 bars (verdict, AUC, by setup, trade backtest), marker toggle, factor-group importance |
-| `analysis/SimulationPanel.tsx` | simulation: **$100 / 1 share per BUY** switch (default $100, remembered), when-to-sell switch, lots, win rate, realized / still-held / total P&L vs the same BUYs never sold, **win rate and P&L by BUY setup** (rebound / trend / all), one ledger row per lot |
+| `analysis/SimulationPanel.tsx` | shared strategy labels (`SIM_LABEL`, `SIM_RULE`, `SIZING_LABEL`, `EXIT_BY`) and `BySetup` (**win rate and P&L by BUY setup**: rebound / trend / all), used by the Backtests page; the old simulation & trade-log panel was removed |
 | `analysis/DecisionTable.tsx` | the 30 most recent BUY, BUY S or SELL decisions (BUY S: no level columns; "Sold at next SELL"), newest first: setup, P, entry, levels (distance in ATR + what set them), outcome, trade exit (20-session window), what the simulation did; rows inside the chart range highlighted, older ones dimmed. **Click a row** (or Enter) to expand `DecisionWhy`. |
 | `analysis/DecisionWhy.tsx` | expanded decision row: P vs threshold, setup checklists on that bar (the one that fired is marked), "What moved the model" diverging bars per factor group, key indicator values |
 | `analysis/ReadingGuide.tsx` | plain-language explanation of every number in the panel |
 | `analysis/FactorRelations.tsx` | correlation / beta / lead table for SPY, QQQ, VIX, oil, gasoline, rate |
 | `analysis/util.ts` | formatting helpers shared by the cards and tables (`pct`, `usd`, `span`, rule text, ...) |
-| `backtest/BacktestPage.tsx` | Backtests page: current-training line + training dates, settings, qualifying-decisions note, Overall / YTD / Per transaction blocks, by setup, rebound vs trend vs both (click a row to switch), trades; "Train now" when there is no training |
+| `backtest/BacktestPage.tsx` | Backtests page: current-training line + training dates, settings, qualifying-decisions note, Overall / YTD / Per transaction blocks, by setup, rebound vs trend vs both (click a row to switch), trades, decision logs; "Train now" when there is no training |
+| `backtest/DecisionLogs.tsx` | Backtests page, below the results: the models' own most recent decisions - the BUY, BUY S and SELL tables (`DecisionTable`), sim columns from the analysis' simulation, lot size from **Each BUY** |
 
 ---
 
@@ -617,7 +618,7 @@ every bar).
 
 ### 8.7 $100 simulation
 
-`quant/portfolio.py` + `components/analysis/SimulationPanel.tsx`, over the **30 most recent BUYs**:
+`quant/portfolio.py` (shown in the decision tables' sim columns on the Backtests page), over the **30 most recent BUYs**:
 
 - **Two strategies, each with its own BUY model and its own 30 most recent BUYs (own period):**
   - **Sell-signal strategy** - BUYs from **BUY S** (8.1b); sold only at the next SELL decision.
@@ -673,7 +674,7 @@ the previous day's.
   rows today's model learned from (`current`: start, end, bars, sessions, calendar days) and the first walk-forward
   model's rows (`first`, with `predicts_from`), number of retrains and the step. A warning is shown when today's model
   covers less than a year (e.g. ~17 sessions on 5-minute bars), plus a disclaimer that other dates give other results.
-- The UI lists the 30 most recent BUY and SELL decisions (`DecisionTable.tsx`), including those before the chart
+- The Backtests page's **Decision logs** list the 30 most recent BUY, BUY S and SELL decisions (`DecisionTable.tsx`), including those before the chart
   range (dimmed, tagged "before chart range"). Clicking a row shows what supported it (`quant/explain.py`):
 
   | Part | How it is computed |
@@ -710,6 +711,7 @@ Find entry points run, or **Train now** on the chart as shown); nothing is retra
 | Sell when P ≥ | Model | the same for the SELL model (interim-top bars), or a custom % |
 | Each BUY | $100 | $100 worth or 1 share per BUY |
 | Sell | Sell-signal | **Sell-signal strategy** (BUY S decisions, sell everything at the next SELL) or **Profit-take / stop-loss strategy** (BUY decisions, each lot also at its own levels / time limit) |
+| Max shares held | No limit | sell-signal strategy only: most shares held at once. A BUY that would take the holding above it is skipped (listed under **Skipped BUYs** with the shares held then); the next SELL empties the holding, so BUYs resume. With $100 per BUY the lots are fractional shares. Overall shows the most shares held vs the cap and how many BUYs were skipped; "Same BUYs, never sold" counts only the BUYs actually made (`portfolio.admit`, `max_shares` query parameter) |
 
 How decisions are chosen (`quant/backtest.py`): every bar of the model-check window that was in the chosen setup with
 P ≥ the BUY threshold, at most one per cooldown (5 bars on Daily, one hour intraday), the most recent N; SELLs are the
@@ -729,6 +731,14 @@ Results (`quant/portfolio.py`), for the chosen sell rule:
 | By setup | the same per rebound / trend lots |
 | Rebound vs trend vs both | the three strategies with the same N, threshold and lot size (click a row to show it) |
 | Trades | every lot: bought, setup, P, size, prices, exit reason, holding time, P&L, return |
+
+**Decision logs** (below the results, `DecisionLogs.tsx`; moved here from the analysis card): the models' own decisions
+as the analysis made them (model thresholds, rebound + trend, the 30 most recent per strategy) - not changed by the
+Decisions / Strategy / threshold / max-shares settings. The BUY, BUY S and SELL tables with what the analysis'
+simulation did with each decision (lot size from **Each BUY**); click a row for what supported it. (The separate
+simulation & trade-log panel was removed: the backtest's own Trades table covers it.) The SELL table is the
+sell-signal strategy's ("SELL decisions (sell-signal strategy)": the lots each SELL sold and their P&L) with a second
+column for the lots the profit-take / stop-loss strategy still held at that SELL.
 
 Training runs live in server memory (the last 30); after a server restart the page asks to retrain.
 

@@ -147,7 +147,7 @@ async def run_analysis(req: AnalysisRequest, refresh: bool = False) -> dict:
 
 
 def run_backtest(run_id: str, n: int, setups: str, min_prob: float | None, sizing: str,
-                 sell_min_prob: float | None = None) -> dict:
+                 sell_min_prob: float | None = None, max_shares: float | None = None) -> dict:
     """Backtest scenarios on a training run (quant/backtest.py)."""
     run = _runs.get(run_id)
     if run is None:
@@ -162,10 +162,13 @@ def run_backtest(run_id: str, n: int, setups: str, min_prob: float | None, sizin
             raise ApiError(422, "A probability threshold must be between 0 and 100%.")
     if sizing not in portfolio.SIZINGS:
         raise ApiError(422, "sizing must be usd or share.")
+    if max_shares is not None and not 0 < max_shares <= 1e6:
+        raise ApiError(422, "Max shares held must be more than 0.")
     _runs.move_to_end(run_id)
     return {"run_id": run_id, "symbol": run["symbol"], "timeframe": run["timeframe"], "range": run["range"],
             "bar_unit": run["bar_unit"], "cooldown": run["cooldown"], "window": run["window"],
-            **qbt.backtest(run, n=n, setups=setups, min_prob=min_prob, sell_min_prob=sell_min_prob, sizing=sizing)}
+            **qbt.backtest(run, n=n, setups=setups, min_prob=min_prob, sell_min_prob=sell_min_prob, sizing=sizing,
+                           max_shares=max_shares)}
 
 
 async def intraday_snapshot(symbol: str) -> dict:

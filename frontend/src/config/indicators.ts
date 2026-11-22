@@ -2,7 +2,7 @@
 import type { Timeframe } from "../types/api";
 
 export type IndicatorKey =
-  | "sma1" | "sma2" | "sma3" | "ema1" | "ema2" | "bb" | "vwap" | "volume" | "rsi" | "macd";
+  | "sma1" | "sma2" | "sma3" | "ema1" | "ema2" | "bb" | "vwap" | "vix" | "volume" | "rsi" | "macd";
 
 /** Lengths in bars. bb = [length, multiplier]. */
 export interface IndicatorParams {
@@ -13,7 +13,9 @@ export interface IndicatorParams {
   macd: [number, number, number];
 }
 
-export const DEFAULT_ENABLED: IndicatorKey[] = ["volume", "sma1", "sma2", "rsi", "macd"];
+export const DEFAULT_ENABLED: IndicatorKey[] = ["volume", "sma1", "sma2", "vwap", "vix", "rsi", "macd"];
+/** Lines added to the defaults later: switched on once for indicator settings saved before they existed. */
+export const NEW_DEFAULTS: IndicatorKey[] = ["vix", "vwap"];
 
 const STD: IndicatorParams = { sma: [20, 50, 200], ema: [12, 26], bb: [20, 2], rsi: 14, macd: [12, 26, 9] };
 
@@ -45,9 +47,10 @@ export const INDICATOR_ROWS: IndicatorRow[] = [
   { key: "ema1", label: "EMA", color: "#16a085", fields: [["ema", 0]] },
   { key: "ema2", label: "EMA", color: "#c0392b", fields: [["ema", 1]] },
   { key: "bb", label: "Bollinger", color: "#0097a7", fields: [["bb", 0], ["bb", 1, true]], hint: "length, σ" },
-  { key: "vwap", label: "VWAP", color: "#e84393", hint: "intraday only" },
+  { key: "vwap", label: "VWAP", color: "#e84393", hint: "per session · daily+: from range start" },
   { section: "Lower panes" },
   { key: "volume", label: "Volume" },
+  { key: "vix", label: "VIX", color: "#ffb6c1", hint: "volatility index · daily close" },
   { key: "rsi", label: "RSI", fields: [["rsi"]] },
   { key: "macd", label: "MACD", fields: [["macd", 0], ["macd", 1], ["macd", 2]], hint: "fast, slow, signal" },
 ];

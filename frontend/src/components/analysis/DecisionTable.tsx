@@ -1,7 +1,7 @@
 /**
  * The most recent decisions (BUY or SELL), newest first; rows inside the chart range are highlighted.
- * Click a row to expand what supported that decision (DecisionWhy). The sim column shows what the simulation
- * (SimulationPanel) did with each decision.
+ * Click a row to expand what supported that decision (DecisionWhy). The sim column shows what the analysis
+ * simulation (quant/portfolio.py) did with each decision.
  */
 import { Fragment, useState } from "react";
 import { EXIT_LABEL, MARK, OUTCOME_COLOR, outcomeLabel, SETUP_LABEL } from "../../chart/markers";
@@ -71,6 +71,13 @@ function SimCell({ e, isBuy, sim, simStart, sizing }: {
   );
 }
 
+/** A simulation column: what one strategy's simulation did with each decision. */
+export interface SimColumn {
+  label: string;       // e.g. "sell-signal"
+  sim?: SimRun;
+  simStart?: number;
+}
+
 interface Props {
   t: TargetResult;
   barUnit: string;
@@ -79,9 +86,15 @@ interface Props {
   sim?: SimRun;
   simStart?: number;
   sizing: SimSizing;
+  /** Title override (e.g. "SELL decisions (sell-signal strategy)"). */
+  title?: string;
+  /** Names the main sim column's strategy when the table has more than one. */
+  simLabel?: string;
+  /** Extra sim column (another strategy), shown after the main one. */
+  extraSim?: SimColumn;
 }
 
-export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, sizing }: Props) {
+export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, sizing, title, simLabel, extraSim }: Props) {
   const { spec } = t;
   const isBuy = spec.kind === "entry";
   const rows = t.signals.slice(-LIMIT).reverse();
@@ -94,13 +107,14 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
     return n;
   });
   const accum = spec.label_rule === "next_sell";   // sell-signal BUY model: no levels, sold at the next SELL
-  const cols = accum ? 7 : isBuy ? 9 : 8;
+  const cols = (accum ? 7 : isBuy ? 9 : 8) + (extraSim ? 1 : 0);
+  const simHead = (label?: string) => `${sizing === "usd" ? "$100" : "1-share"} sim${label ? ` · ${label}` : ""}`;
   return (
     <div className="ta-dec-table">
       <div className="ta-dec-h">
         <span className={`mark-chip mark-${spec.key}`}>{MARK[spec.key].text}</span>
-        <b>{spec.label_rule === "next_sell" ? "BUY S decisions (sell-signal strategy)"
-          : isBuy ? "BUY decisions (profit-take / stop-loss)" : "SELL (take-profit) decisions"}</b>
+        <b>{title ?? (spec.label_rule === "next_sell" ? "BUY S decisions (sell-signal strategy)"
+          : isBuy ? "BUY decisions (profit-take / stop-loss)" : "SELL (take-profit) decisions")}</b>
         <span className="ta-dec-sub">
           most recent {Math.min(LIMIT, t.signals.length)} of {t.signals.length} · {inRange} inside the chart range
           (from {rangeStart}) · older rows are dimmed · click a row for what supported the decision
@@ -120,7 +134,8 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
                 {!accum && <th>{isBuy ? "Stop-loss" : "Invalid above"}</th>}
                 <th className="l">{accum ? "Profit at next SELL?" : isBuy ? "Justified?" : "Outcome"}</th>
                 {isBuy && <th className="l">{accum ? "Sold at next SELL" : `Trade exit (${spec.horizon} sessions)`}</th>}
-                <th className="l">{sizing === "usd" ? "$100" : "1-share"} sim</th>
+                <th className="l">{simHead(simLabel)}</th>
+                {extraSim && <th className="l">{simHead(extraSim.label)}</th>}
               </tr>
             </thead>
             <tbody>
@@ -156,6 +171,7 @@ export function DecisionTable({ t, barUnit, barWord, rangeStart, sim, simStart, 
                       </td>
                       {isBuy && <TradeCell tr={e.trade} unit={barUnit} />}
                       <SimCell e={e} isBuy={isBuy} sim={sim} simStart={simStart} sizing={sizing} />
+                      {extraSim && <SimCell e={e} isBuy={isBuy} sim={extraSim.sim} simStart={extraSim.simStart} sizing={sizing} />}
                     </tr>
                     {expanded && (
                       <tr className="dec-why">

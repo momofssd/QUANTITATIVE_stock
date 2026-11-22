@@ -8,6 +8,8 @@ export const COLORS = {
   line: "#2b6c1f",
   sma1: "#f39c12", sma2: "#2a6ebb", sma3: "#8e44ad",
   ema1: "#16a085", ema2: "#c0392b", bb: "#0097a7", bbFill: "rgba(0, 151, 167, 0.10)", vwap: "#e84393",
+  vix: "#ffb6c1", // light pink, in its own pane above RSI
+  vixText: "#d6597f", // the VIX legend label (light pink is too pale for text)
   rsi: "#2a6ebb", macd: "#2a6ebb", signal: "#f39c12",
   grid: "#f1f1f1", rule: "#d8d8d8", text: "#555",
   histUpStrong: "rgba(54,135,39,0.75)", histUpWeak: "rgba(54,135,39,0.35)",

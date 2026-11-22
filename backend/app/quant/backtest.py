@@ -15,6 +15,8 @@ with each bar's first profit-take / stop-loss / time-limit exit) and the sell-si
 
 threshold = the model's own (training base rate + 10 pts, per retrain) unless the user sets a number - so by default
 the backtest uses exactly the decisions shown in the analysis.
+
+max_shares (sell-signal strategy only): most shares held at once; a BUY that would go over it is skipped.
 """
 from __future__ import annotations
 
@@ -53,11 +55,12 @@ def select_sells(candidates: list[dict], min_prob: float | None, cooldown: int) 
 
 
 def _scenario(run: dict, cands: list[dict], setups: tuple[str, ...], min_prob: float | None, sells_all: list[dict],
-              n: int, sizing: str, use_bracket: bool) -> dict | None:
+              n: int, sizing: str, use_bracket: bool, max_shares: float | None = None) -> dict | None:
     buys = select(cands, setups, min_prob, run["cooldown"], n)
     if not buys:
         return None
-    sc = portfolio._variant(buys, sells_all, run["last"], use_bracket, sizing, run.get("year_start"), limit=None)
+    sc = portfolio._variant(buys, sells_all, run["last"], use_bracket, sizing, run.get("year_start"), limit=None,
+                            max_shares=max_shares)
     return {**sc, "decisions": len(buys), "end_date": run["last"]["date"],
             "probs": [round(b["prob"], 3) for b in buys]}
 
@@ -67,17 +70,19 @@ def _range(values: list[float]) -> list[float] | None:
 
 
 def backtest(run: dict, n: int = 30, setups: str = "both", min_prob: float | None = None,
-             sell_min_prob: float | None = None, sizing: str = "usd") -> dict:
+             sell_min_prob: float | None = None, sizing: str = "usd", max_shares: float | None = None) -> dict:
     """Per strategy: the chosen scenario in full + a rebound / trend / both comparison (same N, thresholds, sizing)."""
     chosen = SETUP_CHOICES[setups]
     sells_all = select_sells(run["sell_candidates"], sell_min_prob, run["sell_cooldown"])
     variants = {}
     for v, (key, use_bracket) in VARIANTS.items():
         cands = run[key]
-        result = _scenario(run, cands, chosen, min_prob, sells_all, n, sizing, use_bracket)
+        cap = max_shares if v == "sell_only" else None
+        result = _scenario(run, cands, chosen, min_prob, sells_all, n, sizing, use_bracket, cap)
         compare = []
         for name, sel in SETUP_CHOICES.items():
-            sc = result if name == setups else _scenario(run, cands, sel, min_prob, sells_all, n, sizing, use_bracket)
+            sc = result if name == setups else _scenario(run, cands, sel, min_prob, sells_all, n, sizing, use_bracket,
+                                                         cap)
             compare.append({"setups": name, "decisions": sc["decisions"] if sc else 0,
                             "summary": sc["summary"] if sc else None})
         variants[v] = {
@@ -90,7 +95,8 @@ def backtest(run: dict, n: int = 30, setups: str = "both", min_prob: float | Non
             "compare": compare,
         }
     return {
-        "params": {"n": n, "setups": setups, "min_prob": min_prob, "sell_min_prob": sell_min_prob, "sizing": sizing},
+        "params": {"n": n, "setups": setups, "min_prob": min_prob, "sell_min_prob": sell_min_prob, "sizing": sizing,
+                   "max_shares": max_shares},
         "variants": variants,
         "sell_model_thresholds": _range([c["threshold"] for c in run["sell_candidates"]]),
         "sell_decisions": len(sells_all),

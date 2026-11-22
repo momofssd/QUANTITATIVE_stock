@@ -478,6 +478,12 @@ input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; 
 .ta-stats label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Most recent 30 decisions (full width) */
 .ta-decisions-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 10px 16px 16px; }
+.ta-moved { margin: 14px 16px 0; padding: 8px 12px; font-size: 12.5px; color: var(--ink-2); background: #f7f9fb;
+  border: 1px solid var(--rule); border-radius: 3px; }
+.bt-logs { margin-top: 22px; border-top: 1px solid var(--rule); }
+.bt-logs .ta-group { padding: 16px 0 0; }
+.bt-logs-sub { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.5; }
+.bt-logs .ta-decisions-list { padding: 10px 0 0; }
 .ta-dec-table { border: 1px solid var(--rule); border-radius: var(--radius); background: #fff; min-width: 0; }
 .ta-dec-table .ta-note { padding: 0 12px 12px; }
 .ta-dec-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 12px; border-bottom: 1px solid var(--rule); font-size: 13px; }
@@ -494,26 +500,13 @@ input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; 
 .ta-bracket-dyn { flex: 1 1 260px; line-height: 1.45; }
 .lvl-basis { display: block; font-size: 10.5px; color: var(--ink-3); font-weight: 400; white-space: nowrap; }
 .ck-plan .lvl-basis { display: inline; margin-left: 4px; }
-/* $100 simulation */
-.sim-body { padding: 10px 12px 0; }
-.sim-body .seg { max-width: 100%; overflow-x: auto; margin-bottom: 10px; }
-.sim-body .seg button { flex: none; }
-.sim-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.sim-stats small { font-size: 12px; font-weight: 700; }
-.sim-panel .ta-note { padding: 0 0 10px; }
-.sim-panel .table-scroll { border-top: 1px solid var(--rule); }
-.sim-panel tr.sim-open td { background: #f4f8fd; }
+/* simulation: decision-table sim column */
 .ta-dec-table td.sim-na { color: var(--ink-3); }
-@media (max-width: 900px) { .sim-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .sim-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-/* $100 simulation: per-setup table */
-.sim-stats b + small { color: var(--ink-3); font-weight: 400; font-size: 11px; }
+/* simulation: per-setup table (Backtests) */
 .sim-setups { margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--radius); }
 .sim-setups th, .sim-setups td { padding: 6px 10px; font-size: 12.5px; }
 .sim-setups td small { color: var(--ink-3); font-size: 11px; }
 .sim-setups tr.sim-all td { border-top: 2px solid var(--rule); background: #fafafa; }
-.sim-stats small.up { color: var(--green); font-weight: 700; }
-.sim-stats small.down { color: var(--red); font-weight: 700; }
 
 /* Current K: projected BUY entry / SELL price (closer scenario first) */
 .ck-proj { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--rule); border-left-width: 4px; border-radius: 3px;
@@ -539,8 +532,6 @@ input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; 
 .ck-trigger.buy { background: var(--green-tint); border: 1px solid #b9d8b2; color: #1f4f16; }
 .ck-trigger.sell { background: #fff1e6; border: 1px solid #f0c8a8; color: #7a3300; }
 .ck-proj-note { margin-top: 6px; }
-.sim-switches { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 10px; }
-.sim-switches .seg { margin-bottom: 0; }
 
 /* Decision tables: expandable rows with what supported the decision */
 .ta-dec-table tr.dec-row { cursor: pointer; }
@@ -702,3 +693,13 @@ label.bt-field { flex-direction: column; }
 .mom-spark.sell circle { fill: #d35400; }
 .mom-spark .thr { stroke: #9a9a9a; stroke-width: 1; stroke-dasharray: 3 2; }
 .mom-price { margin-top: 6px; }
+
+/* Chart title: gain / loss over the selected range */
+.range-chg { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-left: 14px;
+  font-size: 13px; font-weight: 400; vertical-align: middle; }
+.range-chg .rc-k { padding: 1px 6px; border: 1px solid var(--rule); border-radius: 3px; font-size: 11.5px; font-weight: 700;
+  color: var(--ink-2); }
+.range-chg b { font-size: 14px; font-weight: 700; }
+.range-chg.up b { color: var(--green); }
+.range-chg.down b { color: var(--red); }
+.range-chg small { font-size: 11.5px; color: var(--ink-3); }

@@ -3,7 +3,7 @@
  *   This chart range  decisions + outcomes for the bars on the chart (what the markers show), trade results (BUY)
  *   Model check       reliability verdict over the longer window (>= 1,260 bars), AUC, by setup, trade backtest
  * plus the profit-take / stop-loss editor (BUY), the open trade, the marker toggle and the drivers.
- * The 30 most recent decisions are listed below the cards (DecisionTable).
+ * The 30 most recent decisions are listed on the Backtests page (DecisionTable).
  */
 import { useEffect, useState } from "react";
 import { EXIT_LABEL, MARK, SETUP_LABEL } from "../../chart/markers";

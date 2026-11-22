@@ -104,6 +104,10 @@ export interface BarsPayload {
   truncated: boolean;
   has_more: boolean;
   view_start?: number;
+  /** Last bar before the selected range: its close is the base of the range's gain / loss (null = none loaded). */
+  range_base?: { time: number; close: number; daily?: boolean } | null;  // daily: an official (daily bar) close
+  /** Intraday, regular hours: the session's official close - the end of the range's gain / loss until a live tick. */
+  range_last?: { time: number; close: number; daily?: boolean } | null;
   load_from?: string;
   start?: string | null;
   end?: string | null;
@@ -297,7 +301,10 @@ export interface BacktestResult {
   cooldown: number;
   window: { start: string; end: string; bars: number };
   /** min_prob / sell_min_prob null = the model's own threshold (training base rate + 10 pts, per retrain). */
-  params: { n: number; setups: BacktestSetups; min_prob: number | null; sell_min_prob: number | null; sizing: SimSizing };
+  params: {
+    n: number; setups: BacktestSetups; min_prob: number | null; sell_min_prob: number | null; sizing: SimSizing;
+    max_shares: number | null;   // sell-signal strategy: most shares held at once (null = no limit)
+  };
   /** sell_only = sell-signal strategy (its own BUY model); with_bracket = profit-take / stop-loss strategy. */
   variants: Record<"sell_only" | "with_bracket", BacktestVariant>;
   sell_model_thresholds: [number, number] | null;   // the SELL model's own thresholds over the window
@@ -313,8 +320,19 @@ export interface SimRun {
     return_pct: number | null; // total P&L on max_capital
     sells_used: number;        // SELL decisions that sold something
     ytd?: SimYtd;              // backtests only
+    max_shares_held?: number;  // most shares held at the same time
+    max_shares?: number | null; // the cap on shares held (null = no limit)
+    skipped?: number;          // BUYs skipped because they would go over the cap
   };
   by_setup: { rebound: SimTally; trend: SimTally };
+  /** BUYs skipped at the cap (newest first), with the shares held at that moment. */
+  skipped?: SimSkipped[];
+}
+
+export interface SimSkipped {
+  time: number; date: string; price: number; setup: SetupName; prob: number | null;
+  qty: number;   // shares the lot would have bought
+  held: number;  // shares held at that moment
 }
 
 /** One sizing of the simulation: every BUY buys $100 worth ("usd") or 1 share ("share"). */

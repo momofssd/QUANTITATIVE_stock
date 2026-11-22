@@ -1,11 +1,24 @@
-/** The "Chart" card: title + status note, toolbar, chart. */
-import { forwardRef } from "react";
+/** The "Chart" card: title + the selected range's gain / loss + status note, toolbar, chart. */
+import { forwardRef, useState } from "react";
+import type { RangeChange } from "../../chart/legend";
 import type { EntryMarker, PriceLineDef } from "../../chart/markers";
 import { feedName } from "../../config/feeds";
 import { TF_LABEL } from "../../config/timeframes";
 import type { BarsState, ChartOverlay } from "../../hooks/useBars";
 import type { ChartSettings } from "../../hooks/useChartSettings";
-import { barTime } from "../../lib/format";
+import { barTime, dirClass, pct, price, signed } from "../../lib/format";
+
+/** "1Y  +$51.20 (+17.35%)  from 295.03 · close 11/20/2025" */
+function RangeBadge({ rc }: { rc: RangeChange }) {
+  return (
+    <span className={`range-chg ${dirClass(rc.change)}`}
+      title={`${rc.label}: from ${price(rc.base)} (${rc.baseLabel}) to ${price(rc.last)}`}>
+      <span className="rc-k">{rc.label}</span>
+      <b>{signed(rc.change)} ({pct(rc.changePct)})</b>
+      <small>from {price(rc.base)} · {rc.baseLabel}</small>
+    </span>
+  );
+}
 import { ChartToolbar } from "./ChartToolbar";
 import { PriceChart, type PriceChartHandle } from "./PriceChart";
 
@@ -39,10 +52,11 @@ export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
   ref,
 ) {
   const p = bars?.payload.params;
+  const [range, setRange] = useState<RangeChange | null>(null);
   return (
     <section className="card chart-card">
       <div className="card-title">
-        <h2>Chart</h2>
+        <h2>Chart{range && <RangeBadge rc={range} />}</h2>
         <div className="ct-right">
           <span className="note">{busyNote ?? chartNote(bars)}</span>
           <button
@@ -59,7 +73,7 @@ export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
         rsiLabel={`RSI (${p?.rsi ?? settings.params.rsi})`}
         macdLabel={`MACD (${(p?.macd ?? settings.params.macd).join(", ")})`}
         markers={markers} priceLines={priceLines}
-        onNeedOlder={onNeedOlder}
+        onNeedOlder={onNeedOlder} onRange={setRange}
       />
     </section>
   );

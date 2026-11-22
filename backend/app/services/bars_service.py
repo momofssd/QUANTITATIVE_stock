@@ -2,9 +2,15 @@
 
 Daily/weekly/monthly: always the full history Alpaca has; `range` only sets the initial view (`view_start`).
 Intraday: the range window, extended back to `load_from` (YYYY-MM-DD) when the chart scrolls left.
+Every bar also carries `vix`: the CBOE VIX daily close (Yahoo Finance) for the bar's day / week / month - fetched
+in parallel with the bars; if Yahoo is unavailable the column is empty and the chart still loads.
+`vwap`: per session on intraday bars; on daily+ bars anchored at the start of the selected range.
+`range_base`: the last bar before the selected range - its close is the base of the range's gain / loss.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 from dataclasses import dataclass
 
@@ -15,7 +21,10 @@ from ..alpaca_api import feeds
 from ..core.errors import ApiError
 from ..core.timeutil import EARLIEST, ET, et_epoch, iso, now_et
 from ..indicators import IndicatorParams, compute_all
+from ..yahoo_api import client as yahoo
 from .frames import bars_frame
+
+log = logging.getLogger(__name__)
 
 TIMEFRAME_MINUTES = {
     "1Min": 1, "5Min": 5, "15Min": 15, "30Min": 30, "1Hour": 60, "4Hour": 240,
@@ -112,6 +121,71 @@ async def fetch_frame(symbol: str, tf: str, fetch_start: pd.Timestamp, end: pd.T
     return df, session, len(raw)
 
 
+async def _load_vix(start: pd.Timestamp) -> pd.Series | None:
+    """Daily VIX closes from a little before `start`, or None if Yahoo is unavailable (the chart still loads)."""
+    try:
+        return await asyncio.to_thread(yahoo.fetch_vix, (start - pd.Timedelta(days=10)).strftime("%Y-%m-%d"))
+    except Exception as exc:  # noqa: BLE001 - the VIX line is optional
+        log.warning("VIX line unavailable: %s", exc)
+        return None
+
+
+def vix_column(vix: pd.Series | None, session: pd.Series, tf_min: int) -> np.ndarray:
+    """Per bar: the VIX daily close at the end of the bar's period - its day (daily and intraday bars), its week
+    (weekly) or its month (monthly); for the current period the latest close so far. NaN before the VIX data."""
+    n = len(session)
+    if vix is None or vix.empty or n == 0:
+        return np.full(n, np.nan)
+    ends = pd.DatetimeIndex(session.to_numpy())
+    if tf_min >= TIMEFRAME_MINUTES["1Month"]:
+        ends = ends + pd.offsets.MonthEnd(0)
+    elif tf_min >= TIMEFRAME_MINUTES["1Week"]:
+        ends = ends + pd.to_timedelta(6 - ends.dayofweek, unit="D")   # through that week's Sunday
+    pos = vix.index.searchsorted(ends, side="right") - 1
+    values = vix.to_numpy(dtype=float)
+    return np.where(pos >= 0, values[np.clip(pos, 0, None)], np.nan)
+
+
+async def _load_daily(symbol: str) -> list[dict]:
+    """~1 year of official daily bars (shared with the quote, cached briefly), or [] on failure."""
+    from . import quote_service   # local import: quote_service is a sibling service, not a dependency at import
+    try:
+        return await quote_service.daily_bars(symbol)
+    except Exception as exc:  # noqa: BLE001 - only refines the intraday range base
+        log.warning("daily bars unavailable for the range base: %s", exc)
+        return []
+
+
+def official_close_before(daily: list[dict], anchor: pd.Timestamp) -> dict | None:
+    """The official close (daily bar) of the last session before `anchor` (naive ET date) - the base of an intraday
+    chart's range gain / loss (a minute bar's close misses the closing auction)."""
+    if not daily:
+        return None
+    df = bars_frame(daily)
+    dates = df.index.tz_convert(ET).tz_localize(None).normalize()
+    prior = np.flatnonzero(dates < anchor)
+    if not len(prior):
+        return None
+    j = int(prior[-1])
+    return {"time": int(et_epoch(df.index[j:j + 1])[0]), "close": round(float(df["close"].iloc[j]), 4), "daily": True}
+
+
+def anchored_vwap(df: pd.DataFrame, session: pd.Series, anchor: pd.Timestamp) -> np.ndarray:
+    """VWAP of every bar from `anchor` (naive ET date) on: cumulative dollar volume / cumulative volume, using each
+    bar's own VWAP (Alpaca `vw`; typical price when missing). NaN before the anchor. Used on daily+ charts, where a
+    per-session VWAP would just be each bar's own price."""
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    px = df["bar_vwap"].where(df["bar_vwap"].notna(), typical) if "bar_vwap" in df else typical
+    on = (session >= anchor).to_numpy()
+    vol = df["volume"].to_numpy(dtype=float) * on
+    cum_v = np.cumsum(vol)
+    cum_pv = np.cumsum(px.to_numpy(dtype=float) * vol)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = cum_pv / cum_v
+    out[~on | (cum_v == 0)] = np.nan
+    return out
+
+
 async def build_bars(req: BarsRequest) -> dict:
     rng, tf, tf_min = resolve_range(req.range, req.timeframe)
     intraday = tf_min < 1440
@@ -132,13 +206,25 @@ async def build_bars(req: BarsRequest) -> dict:
         load_start = EARLIEST
     fetch_start = load_start - pd.Timedelta(days=warmup_days(tf_min, params.warmup_bars(), req.extended))
 
-    df, session, raw_count = await fetch_frame(req.symbol, tf, fetch_start, display_end, req.extended)
+    # in parallel with the bars: Yahoo VIX, and (intraday) the official daily closes for the range base
+    side = [asyncio.ensure_future(_load_vix(fetch_start))]
+    if intraday:
+        side.append(asyncio.ensure_future(_load_daily(req.symbol)))
+    try:
+        df, session, raw_count = await fetch_frame(req.symbol, tf, fetch_start, display_end, req.extended)
+    except BaseException:
+        for task in side:
+            task.cancel()
+        raise
+    vix = await side[0]
+    daily = await side[1] if intraday else []
     base = {"symbol": req.symbol, "range": rng, "timeframe": tf, "intraday": intraday,
             "extended": req.extended, "feed": feeds.feed_label(), "params": params.to_dict()}
     if df.empty:
         return _empty(base)
 
     full = pd.concat([df, compute_all(df, intraday, session, params)], axis=1)
+    full["vix"] = vix_column(vix, session, tf_min)
 
     # Trim warm-up bars off the front; work out where the initial view starts.
     if rng in SESSION_RANGES:
@@ -152,6 +238,26 @@ async def build_bars(req: BarsRequest) -> dict:
     else:
         view_start = int(display_start.tz_localize(None).value // 10**9)
         mask = full.index >= load_start
+
+    # The selected range starts at `anchor` (naive ET date): daily+ VWAP is anchored there, and the range's gain /
+    # loss is measured from the close of the last bar before it (the previous session's close on 1D).
+    anchor = keep_from if rng in SESSION_RANGES else display_start.tz_localize(None).normalize()
+    if not intraday:
+        full["vwap"] = anchored_vwap(df, session, anchor)
+    range_base = official_close_before(daily, anchor) if intraday else None
+    # intraday (regular hours): the range ends at the latest official close of the last bar's session, when known
+    range_last = None
+    if intraday and not req.extended and len(session):
+        last_day = session.iloc[-1] + pd.Timedelta(days=1)
+        latest = official_close_before(daily, last_day)
+        if latest and pd.Timestamp(latest["time"], unit="s").normalize() == session.iloc[-1]:
+            range_last = latest
+    prior = (session < anchor).to_numpy()
+    if range_base is None and prior.any():
+        j = int(np.flatnonzero(prior)[-1])
+        range_base = {"time": int(et_epoch(full.index[j:j + 1])[0]), "close": round(float(full["close"].iloc[j]), 4),
+                      "daily": not intraday}
+
     full = full[mask]
     truncated = raw_count >= MAX_BARS
 
@@ -165,6 +271,10 @@ async def build_bars(req: BarsRequest) -> dict:
         "count": len(full),
         "truncated": truncated,
         "view_start": view_start,
+        # last bar before the selected range (its close = the base of the range's gain / loss); None = no earlier bar
+        "range_base": range_base,
+        # intraday: the session's official close (daily bar) - the end of the range's gain / loss until a live tick
+        "range_last": range_last,
         "load_from": load_start.strftime("%Y-%m-%d"),
         "has_more": bool(intraday and load_start > EARLIEST and not truncated),
         "start": iso(full.index[0]) if len(full) else None,

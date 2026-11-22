@@ -3,6 +3,8 @@
  *   settings   most recent N BUY decisions (1-100, default 30) · strategy rebound / trend / both ·
  *              buy when the model's P >= threshold (default 60%) · $100 or 1 share per BUY · sell rule
  *   results    Overall · YTD · per transaction · by setup · rebound vs trend vs both · trades
+ *   logs       the models' own most recent decisions: strategy simulation + trade log, BUY / BUY S / SELL tables
+ *              (DecisionLogs; moved here from the analysis card)
  * The server picks the decisions from that training's out-of-sample probabilities and simulates them
  * (quant/backtest.py + quant/portfolio.py); nothing is retrained here.
  */
@@ -10,16 +12,17 @@ import { useEffect, useState } from "react";
 import { MARK, SETUP_LABEL } from "../../chart/markers";
 import { TF_LABEL } from "../../config/timeframes";
 import type { AnalysisApi } from "../../hooks/useAnalysis";
-import { N_RANGE, useBacktest, validN, validProb, type SellRule } from "../../hooks/useBacktest";
+import { N_RANGE, useBacktest, validMaxShares, validN, validProb, type SellRule } from "../../hooks/useBacktest";
 import { price } from "../../lib/format";
 import type { ApiError } from "../../services/api";
 import type {
-  BacktestResult, BacktestScenario, BacktestSetups, BacktestVariant, SetupName, SimRun, SimSizing,
+  BacktestResult, BacktestScenario, BacktestSetups, BacktestVariant, SetupName, SimRun, SimSizing, SimSkipped,
 } from "../../types/api";
 import { Elapsed } from "../analysis/AnalysisPanel";
 import { BySetup, EXIT_BY, SIM_LABEL, SIM_RULE, SIZING_LABEL } from "../analysis/SimulationPanel";
 import { TrainingDates } from "../analysis/TrainingDates";
 import { dirCls, pct, span, usd } from "../analysis/util";
+import { DecisionLogs } from "./DecisionLogs";
 
 const STRATEGY: Record<BacktestSetups, string> = { rebound: "Rebound", trend: "Trend", both: "Both" };
 /** Shares on hand: whole shares with "1 share per BUY", fractional with "$100 per BUY". */
@@ -70,6 +73,37 @@ function ThresholdField({ label, value, today, range, onChange }: {
         )}
       </div>
       <small>{value === null ? `model: ${pctRange(range) || "—"} (base rate + 10 pts)` : "your threshold"}</small>
+    </div>
+  );
+}
+
+const capText = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 3 });
+
+/** Sell-signal strategy: no limit (default) or the most shares held at once (a BUY over it is skipped). */
+function MaxSharesField({ value, sizing, onChange }: {
+  value: number | null; sizing: SimSizing; onChange: (v: number | null) => void;
+}) {
+  const [text, setText] = useState(value === null ? "" : String(value));
+  useEffect(() => setText(value === null ? "" : String(value)), [value]);
+  const ok = text.trim() !== "" && validMaxShares(Number(text));
+  return (
+    <div className="bt-field">
+      <span>Max shares held</span>
+      <div className="bt-thr">
+        <div className="seg seg-sm" role="group" aria-label="Max shares held">
+          <button className={value === null ? "on" : ""} onClick={() => onChange(null)}
+            title="Every BUY adds a lot, however many shares are held">No limit</button>
+          <button className={value !== null ? "on" : ""}
+            onClick={() => value === null && onChange(sizing === "share" ? 5 : 1)}>Max</button>
+        </div>
+        {value !== null && (
+          <><input type="number" min={sizing === "share" ? 1 : 0.001} step={sizing === "share" ? 1 : 0.1} value={text}
+            className={ok ? "" : "bad"} aria-label="Most shares held at once"
+            onChange={(e) => { setText(e.target.value); const v = Number(e.target.value);
+              if (e.target.value.trim() !== "" && validMaxShares(v)) onChange(v); }} /> sh</>
+        )}
+      </div>
+      <small>{value === null ? "sell-signal strategy · every BUY adds a lot" : "a BUY over this is skipped until the next SELL"}</small>
     </div>
   );
 }
@@ -129,6 +163,9 @@ function Controls({ bt, today, ranges, available }: {
           ))}
         </div>
       </div>
+      {s.sell === "sell_only" && (
+        <MaxSharesField value={s.maxShares} sizing={s.sizing} onChange={(v) => bt.setSettings({ maxShares: v })} />
+      )}
     </div>
   );
 }
@@ -162,6 +199,10 @@ function Blocks({ sc, run, sizing, barUnit }: { sc: BacktestScenario; run: SimRu
             sub={`${shares(sc.hold_all.shares, sizing)} shares on hand · cost ${money(sc.hold_all.cost)} · worth ${money(sc.hold_all.value)}`} />
           <Stat label="Buy & hold from the first BUY" value={usd(sc.buy_hold.pnl)} cls={dirCls(sc.buy_hold.pnl)}
             sub={`${lot} bought ${sc.start_date}, never sold`} />
+          {s.max_shares != null && (
+            <Stat label="Max shares held" value={`${shares(s.max_shares_held ?? 0, sizing)} of ${capText(s.max_shares)}`}
+              sub={`${s.skipped ?? 0} BUY${s.skipped === 1 ? "" : "s"} skipped at the cap`} />
+          )}
         </div>
       </div>
       <div className="bt-block">
@@ -264,6 +305,33 @@ function Trades({ run, barUnit, sizing }: { run: SimRun; barUnit: string; sizing
   );
 }
 
+function Skipped({ rows, sizing }: { rows: SimSkipped[]; sizing: SimSizing }) {
+  return (
+    <div className="table-scroll">
+      <table className="grid">
+        <thead>
+          <tr>
+            <th className="l">BUY decision</th><th className="l">Setup</th><th>P</th><th>at</th><th>Would buy</th>
+            <th>Shares held then</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((k) => (
+            <tr key={k.time} className="bt-skipped">
+              <td className="l">{k.date}</td>
+              <td className="l">{k.setup ? SETUP_LABEL[k.setup as Exclude<SetupName, "">] : "—"}</td>
+              <td>{pct(k.prob)}</td>
+              <td>{price(k.price)}</td>
+              <td>{shares(k.qty, sizing)} sh</td>
+              <td>{shares(k.held, sizing)} sh</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ page */
 
 export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
@@ -319,7 +387,9 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
             available={v && res ? v.pool[res.params.setups].qualified : null}
             today={{ buy: r.targets[buyKey].current?.threshold ?? null, sell: r.targets.tp_short.current?.threshold ?? null }} />
           <p className="bt-strategy">
-            <b>{SIM_LABEL[sell]}:</b> {SIM_RULE[sell]}.
+            <b>{SIM_LABEL[sell]}:</b> {SIM_RULE[sell]}
+            {sell === "sell_only" && bt.settings.maxShares !== null
+              && <> · at most <b>{capText(bt.settings.maxShares)} shares</b> held at once (a BUY over that is skipped)</>}.
           </p>
 
           {bt.error && (
@@ -333,7 +403,9 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
               {res.params.min_prob === null ? `the model's threshold (${pctRange(v.model_thresholds)})`
                 : `${Math.round(res.params.min_prob * 100)}%`}, one per {res.cooldown} bars) in {res.window.start} →{" "}
               {res.window.end}
-              {sc ? <>; the most recent <b>{sc.decisions}</b> are simulated.</> : "."}
+              {sc ? <>; the most recent <b>{sc.decisions}</b> are simulated
+                {sc.summary.max_shares != null && <> ({sc.summary.skipped ?? 0} skipped at the{" "}
+                  {capText(sc.summary.max_shares)}-share cap, {sc.summary.lots} bought)</>}.</> : "."}
               {" "}SELL decisions: <b>{res.sell_decisions}</b> (P ≥{" "}
               {res.params.sell_min_prob === null ? `the model's threshold (${pctRange(res.sell_model_thresholds)})`
                 : `${Math.round(res.params.sell_min_prob * 100)}%`}).
@@ -358,6 +430,16 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
               <Compare r={res} v={v} onPick={(k) => bt.setSettings({ setups: k })} />
               <div className="ta-section">Trades ({sc.trades.length} lots, newest first)</div>
               <Trades run={sc} barUnit={res.bar_unit} sizing={res.params.sizing} />
+              {sc.summary.max_shares != null && (
+                <>
+                  <div className="ta-section">
+                    Skipped BUYs ({sc.skipped?.length ?? 0}, newest first): already holding{" "}
+                    {capText(sc.summary.max_shares)} shares or would go over it
+                  </div>
+                  {sc.skipped && sc.skipped.length > 0 ? <Skipped rows={sc.skipped} sizing={res.params.sizing} />
+                    : <p className="ta-note">None: the cap was never reached.</p>}
+                </>
+              )}
               <p className="ta-note">
                 How it works: P is the out-of-sample probability the walk-forward model gave each bar (it never saw that
                 bar's outcome). The sell-signal strategy buys on the sell-signal BUY model ("BUY S": trained on whether
@@ -368,11 +450,14 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
                 10 points, recomputed at every retrain - the same decisions as the analysis) unless you set a number.
                 Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at that close (also while holding); the
                 next SELL decision sells everything held
-                {sell === "with_bracket" && `; each lot is also sold earlier at its own profit-take / stop-loss, or after ${r.targets.short.spec.horizon} sessions`}. Lots still
+                {sell === "with_bracket" && `; each lot is also sold earlier at its own profit-take / stop-loss, or after ${r.targets.short.spec.horizon} sessions`}
+                {sell === "sell_only" && res.params.max_shares !== null && `; with Max shares held, a BUY that would take the shares held above ${capText(res.params.max_shares)} is skipped (BUYs resume after the next SELL), and "Same BUYs, never sold" counts only the BUYs actually made`}. Lots still
                 held are valued at the last close. Before commissions and slippage. Past results do not guarantee future results.
               </p>
             </div>
           )}
+
+          <DecisionLogs r={r} sizing={bt.settings.sizing} />
         </div>
       )}
     </section>

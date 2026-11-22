@@ -94,3 +94,88 @@ def test_search_ranking():
     assert [a["symbol"] for a in search_service.rank(assets, "aap")] == ["AAP", "AAPL"]
     assert [a["symbol"] for a in search_service.rank(assets, "apple")] == ["AAPL", "XYZ"]
     assert search_service.rank(assets, "  ") == []
+
+
+async def test_bars_carry_the_vix_daily_close_per_bar(fake_alpaca):
+    # fake VIX = 10 + day of the month, so each value names the day it came from
+    daily = await build_bars(BarsRequest(symbol="AAPL", range="1Y"))
+    days = pd.to_datetime(daily["columns"]["time"], unit="s")
+    vix = daily["columns"]["vix"]
+    assert all(v == 10 + d.day for v, d in zip(vix[-50:], days[-50:]))           # the bar's own day
+    weekly = await build_bars(BarsRequest(symbol="AAPL", range="5Y", timeframe="1Week"))
+    wk = pd.to_datetime(weekly["columns"]["time"], unit="s")
+    friday = wk[-10] + pd.Timedelta(days=4)                                        # bars start on Monday
+    assert weekly["columns"]["vix"][-10] == 10 + friday.day                        # the week's last close
+    intraday = await build_bars(BarsRequest(symbol="AAPL", range="1D"))
+    t = pd.to_datetime(intraday["columns"]["time"], unit="s")
+    assert set(intraday["columns"]["vix"]) == {10 + t[0].day}                      # that session's close
+
+
+async def test_bars_still_load_without_vix(fake_alpaca, monkeypatch):
+    from backend.app.yahoo_api import client as yahoo
+
+    def down(start):
+        raise ApiError(502, "Yahoo down")
+    monkeypatch.setattr(yahoo, "fetch_vix", down)
+    out = await build_bars(BarsRequest(symbol="AAPL", range="1Y"))
+    assert out["count"] > 0 and set(out["columns"]["vix"]) == {None}
+
+
+def test_vix_column_week_and_month_ends():
+    import numpy as np
+
+    from backend.app.services.bars_service import vix_column
+    vix = pd.Series([20.0, 21.0, 22.0], index=pd.to_datetime(["2026-01-05", "2026-01-09", "2026-01-12"]))
+    # a week starting on Tuesday (Monday holiday) still ends that Sunday - never next Monday's close
+    s = pd.Series(pd.to_datetime(["2026-01-06", "2026-01-13"]))
+    assert vix_column(vix, s, 10080).tolist() == [21.0, 22.0]
+    assert vix_column(vix, pd.Series(pd.to_datetime(["2026-01-01"])), 43200).tolist() == [22.0]   # month so far
+    assert np.isnan(vix_column(vix, pd.Series(pd.to_datetime(["2025-12-31"])), 1440)[0])          # before data
+    assert np.isnan(vix_column(None, s, 1440)).all()
+
+
+async def test_daily_vwap_is_anchored_at_the_range_start(fake_alpaca):
+    out = await build_bars(BarsRequest(symbol="AAPL", range="1Y"))
+    c = out["columns"]
+    i0 = next(i for i, t in enumerate(c["time"]) if t >= out["view_start"])
+    assert all(v is None for v in c["vwap"][:i0])                       # nothing before the range
+    assert c["vwap"][i0] == c["bar_vwap"][i0]                           # the first bar's own VWAP
+    vw, v = c["bar_vwap"][i0:i0 + 5], c["volume"][i0:i0 + 5]
+    assert abs(c["vwap"][i0 + 4] - sum(a * b for a, b in zip(vw, v)) / sum(v)) < 1e-3   # cumulative from there
+
+
+async def test_range_base_is_the_close_before_the_range(fake_alpaca):
+    out = await build_bars(BarsRequest(symbol="AAPL", range="1Y"))
+    c, base = out["columns"], out["range_base"]
+    i0 = next(i for i, t in enumerate(c["time"]) if t >= out["view_start"])
+    assert base == {"time": c["time"][i0 - 1], "close": c["close"][i0 - 1], "daily": True}
+    day = await build_bars(BarsRequest(symbol="AAPL", range="1D"))
+    t0 = pd.Timestamp(day["columns"]["time"][0], unit="s")
+    prev = pd.Timestamp(day["range_base"]["time"], unit="s")
+    # intraday: the previous session's official (daily bar) close, not its last minute bar
+    assert day["range_base"]["daily"] is True and prev.normalize() < t0.normalize() and prev.strftime("%H:%M") == "00:00"
+    assert None not in day["columns"]["vwap"]                            # intraday: per-session VWAP as before
+    assert (await build_bars(BarsRequest(symbol="AAPL", range="MAX")))["range_base"] is None
+
+
+async def test_intraday_range_base_falls_back_to_the_last_minute_bar(fake_alpaca, monkeypatch):
+    from backend.app.services import quote_service
+
+    async def down(symbol):
+        raise ApiError(502, "no daily bars")
+    monkeypatch.setattr(quote_service, "daily_bars", down)
+    day = await build_bars(BarsRequest(symbol="AAPL", range="1D"))
+    prev = pd.Timestamp(day["range_base"]["time"], unit="s")
+    assert day["range_base"]["daily"] is False and prev.strftime("%H:%M") == "15:59"
+
+
+async def test_intraday_range_ends_at_the_sessions_official_close(fake_alpaca):
+    from backend.app.services import quote_service
+    day = await build_bars(BarsRequest(symbol="AAPL", range="1D"))
+    last = day["range_last"]
+    daily = await quote_service.daily_bars("AAPL")
+    t_last = pd.Timestamp(day["columns"]["time"][-1], unit="s").normalize()
+    assert last["daily"] is True and pd.Timestamp(last["time"], unit="s") == t_last
+    assert last["close"] == round(daily[-1]["c"], 4)
+    assert (await build_bars(BarsRequest(symbol="AAPL", range="1D", extended=True)))["range_last"] is None
+    assert (await build_bars(BarsRequest(symbol="AAPL", range="1Y")))["range_last"] is None   # daily: the last bar

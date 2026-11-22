@@ -1,18 +1,15 @@
 /**
  * "Short-term BUY & SELL Analysis" card: progress, marker legend, current K, BUY + SELL cards (chart range + model
- * check), the 30 most recent BUY and SELL decisions, factor relations, method.
+ * check), factor relations, method. The decision logs (most recent decisions + simulation) are on the Backtests page.
  */
 import { useEffect, useState } from "react";
 import { BLUE, GREEN, RED } from "../../chart/markers";
 import type { AnalysisApi } from "../../hooks/useAnalysis";
 import { TF_LABEL } from "../../config/timeframes";
-import { load, save } from "../../lib/storage";
-import type { SimSizing, TargetKey } from "../../types/api";
+import type { TargetKey } from "../../types/api";
 import { CurrentKPanel } from "./CurrentKPanel";
-import { DecisionTable } from "./DecisionTable";
 import { FactorRelations } from "./FactorRelations";
 import { ReadingGuide } from "./ReadingGuide";
-import { SimulationPanel, type SimVariant } from "./SimulationPanel";
 import { TargetCard } from "./TargetCard";
 import { TrainingDates } from "./TrainingDates";
 
@@ -40,20 +37,7 @@ interface Props {
 
 export function AnalysisPanel({ a, mismatch, chartRange, onRetrain, livePrice }: Props) {
   const r = a.result;
-  const [simVariant, setSimVariantState] = useState<SimVariant>(() => load<SimVariant>("simVariant", "sell_only"));
-  const setSimVariant = (v: SimVariant) => {
-    setSimVariantState(v);
-    save("simVariant", v);
-  };
-  // $100 per BUY (default) or 1 share per BUY
-  const [simSizing, setSimSizingState] = useState<SimSizing>(() => load<SimSizing>("simSizing", "usd"));
-  const setSimSizing = (z: SimSizing) => {
-    setSimSizingState(z);
-    save("simSizing", z);
-  };
   if (!r && !a.loading) return null;
-  const sim = r?.simulation ?? null;
-  const barWord = r?.timeframe === "1Day" ? "day" : r?.timeframe === "1Week" ? "week" : "bar";
   const card = (k: TargetKey) => (
     <TargetCard
       t={r!.targets[k]} barUnit={r!.bar_unit} rangeWindow={r!.range_window} window={r!.window}
@@ -133,21 +117,10 @@ export function AnalysisPanel({ a, mismatch, chartRange, onRetrain, livePrice }:
           <ReadingGuide buyHold={r.targets.short.spec.horizon} sellHold={r.targets.tp_short.spec.horizon} />
           <div className="ta-group">Short-term</div>
           <div className="ta-grid">{card("short")}{card("accum")}{card("tp_short")}</div>
-          <div className="ta-group">Most recent decisions</div>
-          <div className="ta-decisions-list">
-            {sim && <SimulationPanel sim={sim} variant={simVariant} onVariant={setSimVariant} sizing={simSizing}
-              onSizing={setSimSizing} barUnit={r.bar_unit} />}
-            {/* each BUY table shows its own strategy's simulation; the SELL table the strategy selected above */}
-            <DecisionTable t={r.targets.short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
-              sim={sim?.[simSizing].with_bracket ?? undefined} simStart={sim?.[simSizing].with_bracket?.start_time}
-              sizing={simSizing} />
-            <DecisionTable t={r.targets.accum} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
-              sim={sim?.[simSizing].sell_only ?? undefined} simStart={sim?.[simSizing].sell_only?.start_time}
-              sizing={simSizing} />
-            <DecisionTable t={r.targets.tp_short} barUnit={r.bar_unit} barWord={barWord} rangeStart={r.range_window.start}
-              sim={sim?.[simSizing][simVariant] ?? undefined} simStart={sim?.[simSizing][simVariant]?.start_time}
-              sizing={simSizing} />
-          </div>
+          <p className="ta-moved">
+            Decision logs (the most recent BUY, BUY S and SELL decisions) are on the{" "}
+            <a href="#/backtests">Backtests</a> page.
+          </p>
           <FactorRelations relations={r.relations} years={r.window.years} />
           <details className="ta-method">
             <summary>Method</summary>

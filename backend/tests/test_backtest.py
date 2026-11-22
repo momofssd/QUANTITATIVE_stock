@@ -90,3 +90,55 @@ def test_service_validates_and_reports_missing_runs():
         assert svc.run_backtest("t1", 30, "both", None, "usd", None)["params"]["min_prob"] is None
     finally:
         svc._runs.pop("t1", None)
+
+
+def test_max_shares_skips_buys_until_the_next_sell():
+    buys = [dict(cand(i, "rebound", 0.9), price=100.0 + i) for i in (1, 2, 3, 4, 6, 7)]
+    sells = [ev(5, 120.0), ev(9, 130.0)]
+    last = ev(10, 125.0)
+    r = portfolio.run(buys, sells, last, use_bracket=False, sizing="share", max_shares=2)
+    bought = sorted(t["buy_date"] for t in r["trades"])
+    assert bought == ["d01", "d02", "d06", "d07"]                   # 3 and 4 over the cap; the SELL at 5 frees it
+    assert [s["date"] for s in r["skipped"]] == ["d04", "d03"]      # newest first, with the shares held then
+    assert all(s["held"] == 2 for s in r["skipped"])
+    assert r["summary"]["skipped"] == 2 and r["summary"]["max_shares_held"] == 2 and r["summary"]["max_shares"] == 2
+    # no cap: every BUY is bought (unchanged behaviour)
+    r0 = portfolio.run(buys, sells, last, use_bracket=False, sizing="share")
+    assert r0["summary"]["lots"] == 6 and r0["summary"]["skipped"] == 0 and r0["skipped"] == []
+
+
+def test_max_shares_sell_and_buy_on_the_same_bar_and_fractional_lots():
+    # a SELL at bar 2's close sells first, so the BUY at bar 2 fits under a 1-share cap
+    buys = [dict(cand(1, "trend", 0.9), price=100.0), dict(cand(2, "trend", 0.9), price=100.0)]
+    r = portfolio.run(buys, [ev(2, 110.0)], ev(3, 105.0), use_bracket=False, sizing="share", max_shares=1)
+    assert r["summary"]["lots"] == 2 and r["summary"]["skipped"] == 0
+    # $100 lots at $50 are 2 shares each: a 3-share cap fits one lot
+    buys = [dict(cand(i, "rebound", 0.9), price=50.0) for i in (1, 2)]
+    v = portfolio._variant(buys, [], ev(3, 60.0), False, "usd", limit=None, max_shares=3)
+    assert v["summary"]["lots"] == 1 and v["summary"]["skipped"] == 1
+    assert v["hold_all"]["shares"] == 2 and v["hold_all"]["cost"] == 100   # baselines use the BUYs actually bought
+    # a cap below one lot buys nothing
+    v = portfolio._variant(buys, [], ev(3, 60.0), False, "usd", limit=None, max_shares=1)
+    assert v["summary"]["lots"] == 0 and v["hold_all"]["pnl_pct"] is None
+
+
+def test_backtest_cap_applies_to_the_sell_signal_strategy_only():
+    cands = [cand(i, "rebound", 0.9, price=100.0) for i in range(0, 40, 2)]
+    run = {"candidates": cands, "accum_candidates": cands, "cooldown": 1,
+           "sell_candidates": [sell(21, 110.0)], "sell_cooldown": 5, "last": ev(40, 105.0), "year_start": None}
+    out = qbt.backtest(run, n=100, sizing="share", max_shares=3)
+    so, br = out["variants"]["sell_only"]["result"], out["variants"]["with_bracket"]["result"]
+    assert out["params"]["max_shares"] == 3
+    assert so["summary"]["max_shares_held"] == 3 and so["summary"]["skipped"] == 20 - 6   # 3 before the SELL, 3 after
+    assert br["summary"]["skipped"] == 0 and br["summary"]["lots"] == 20
+    both = next(c for c in out["variants"]["sell_only"]["compare"] if c["setups"] == "both")
+    assert both["summary"]["skipped"] == so["summary"]["skipped"]
+    from backend.app.core.errors import ApiError
+    from backend.app.services import analysis_service as svc
+    svc._runs["t2"] = {**run, "symbol": "X", "timeframe": "1Day", "range": "1Y", "bar_unit": "trading days", "window": {}}
+    try:
+        with pytest.raises(ApiError):
+            svc.run_backtest("t2", 30, "both", None, "share", max_shares=0)
+        assert svc.run_backtest("t2", 30, "both", None, "share", max_shares=3)["params"]["max_shares"] == 3
+    finally:
+        svc._runs.pop("t2", None)
