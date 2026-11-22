@@ -614,7 +614,12 @@ def _compute(symbol: str, df: pd.DataFrame, session: pd.Series, daily: pd.DataFr
     ]
     year = int(et_naive[-1].year)
     ys = int(np.argmax(et_naive.year == year))
+    # weekly DCA baseline: the first bar of every week (Monday-based, ET) from the model-check window on
+    monday = (et_naive.normalize() - pd.to_timedelta(et_naive.weekday, unit="D")).to_numpy()
+    weekly = [{"i": i, "time": int(times[i]), "date": stamps[i], "price": float(close[i])}
+              for i in range(w0, n) if i == 0 or monday[i] != monday[i - 1]]
     backtest_run = {
+        "weekly": weekly,
         "candidates": candidates, "cooldown": int(hz_b.cooldown), "accum_candidates": accum_candidates,
         "sell_candidates": sell_candidates, "sell_cooldown": int(hz_s.cooldown),
         "last": {"i": n - 1, "time": int(times[-1]), "date": stamps[-1], "price": float(close[-1])},

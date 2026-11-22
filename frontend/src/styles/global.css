@@ -322,6 +322,10 @@ input[type="checkbox"] { accent-color: var(--green); width: 15px; height: 15px; 
 
 /* ---------------- Entry-point analysis ---------------- */
 .btn-analyze { height: 30px; min-width: 150px; gap: 8px; }
+/* Chart card: BUY setup filter (an "off" setup is filtered off the chart) */
+.buy-filter { display: inline-flex; align-items: center; gap: 6px; }
+.buy-filter .seg button.off { color: var(--ink-3); text-decoration: line-through; }
+.buy-filter .seg button small { font-size: 10.5px; opacity: .8; }
 .btn-analyze:disabled { opacity: .7; cursor: progress; }
 .spinner-sm { width: 14px; height: 14px; border-width: 2px; margin: 0; border-color: rgba(255,255,255,.4); border-top-color: #fff; }
 .analysis-card { margin-top: 16px; }
@@ -623,6 +627,23 @@ label.bt-field { flex-direction: column; }
 .bt-stat label { display: block; font-size: 11px; color: var(--ink-3); }
 .bt-stat b { font-size: 15px; font-variant-numeric: tabular-nums; }
 .bt-stat small { display: block; font-size: 11px; color: var(--ink-3); }
+/* Overall: three groups side by side (trades · profit · average cost) */
+.bt-overall { margin-bottom: 4px; }
+.bt-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 0; }
+.bt-group { display: flex; flex-direction: column; gap: 10px; padding: 0 18px; min-width: 0; }
+.bt-group:first-child { padding-left: 0; }
+.bt-group + .bt-group { border-left: 1px solid var(--rule); }
+.bt-group h4 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-2); }
+.bt-blocks.bt-blocks-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
+/* Same money, other ways */
+.bt-same td.l small { display: block; margin-top: 1px; }
+.bt-verdict { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+@media (max-width: 760px) {
+  .bt-groups { grid-template-columns: minmax(0, 1fr); }
+  .bt-group { padding: 10px 0 0; }
+  .bt-group + .bt-group { border-left: 0; border-top: 1px solid var(--rule); }
+  .bt-blocks.bt-blocks-2 { grid-template-columns: minmax(0, 1fr); }
+}
 .bt-compare tr.clickable { cursor: pointer; }
 .bt-compare tr.active td { background: var(--green-tint); }
 .bt-compare td small { color: var(--ink-3); font-size: 11px; }

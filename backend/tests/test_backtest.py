@@ -122,6 +122,37 @@ def test_max_shares_sell_and_buy_on_the_same_bar_and_fractional_lots():
     assert v["summary"]["lots"] == 0 and v["hold_all"]["pnl_pct"] is None
 
 
+def test_average_cost_and_same_money_baselines():
+    # 1 share at 100 (sold at the SELL at 120) and 1 share at 50 (still held); last close 80
+    buys = [dict(cand(1, "rebound", 0.9), price=100.0), dict(cand(4, "trend", 0.9), price=50.0)]
+    weekly = [ev(0, 90.0), ev(3, 40.0), ev(5, 60.0), ev(8, 80.0)]          # first bar of each week
+    v = portfolio._variant(buys, [ev(2, 120.0)], ev(8, 80.0), False, "share", limit=None, weekly=weekly)
+    s = v["summary"]
+    assert s["shares"] == 2 and s["avg_cost"] == 75.0                       # $150 for 2 shares
+    assert s["open_shares"] == 1 and s["open_cost"] == 50.0 and s["open_avg_cost"] == 50.0
+    assert v["hold_all"]["avg_cost"] == 75.0 and v["hold_all"]["value"] == 160.0 and v["last_price"] == 80.0
+    # all $150 at the first BUY's close (100): 1.5 shares
+    ls = v["lump_sum"]
+    assert ls["shares"] == 1.5 and ls["avg_cost"] == 100.0 and ls["pnl"] == -30.0 and ls["pnl_pct"] == -20.0
+    # weekly DCA, the same $150: the first BUY's bar (100), then the first bar of each later week (40, 60, 80)
+    d = v["dca"]
+    assert d["buys"] == 4 and d["per_buy"] == 37.5 and d["cost"] == 150.0 and d["last_buy_date"] == "d08"
+    shares = 37.5 * (1 / 100 + 1 / 40 + 1 / 60 + 1 / 80)
+    assert d["shares"] == round(shares, 6) and d["avg_cost"] == round(150 / shares, 2)
+    assert d["pnl"] == round(shares * 80 - 150, 2)
+    # without the weekly bars (the analysis' own simulation) there is no DCA
+    assert portfolio._variant(buys, [], ev(8, 80.0), False, "share", limit=None)["dca"] is None
+
+
+def test_backtest_passes_the_weekly_bars_to_the_dca():
+    cands = [cand(i, "rebound", 0.9, price=100.0) for i in range(0, 20, 2)]
+    run = {"candidates": cands, "accum_candidates": cands, "cooldown": 1, "sell_candidates": [], "sell_cooldown": 5,
+           "last": ev(20, 110.0), "year_start": None, "weekly": [ev(i, 100.0) for i in range(0, 21, 5)]}
+    res = qbt.backtest(run, n=3, sizing="usd")["variants"]["sell_only"]["result"]
+    # the 3 most recent BUYs start at bar 14: DCA buys there and at the weeks starting on bars 15 and 20
+    assert res["dca"]["buys"] == 3 and res["dca"]["cost"] == res["summary"]["invested"] == 300.0
+
+
 def test_backtest_cap_applies_to_the_sell_signal_strategy_only():
     cands = [cand(i, "rebound", 0.9, price=100.0) for i in range(0, 40, 2)]
     run = {"candidates": cands, "accum_candidates": cands, "cooldown": 1,

@@ -5,6 +5,7 @@
  *   trade exits    small dot above the bar on the exit day, labelled with the trade's return
  *   current K      the latest decision on the newest candle: BUY / SELL (black) or "–" (grey, no signal)
  *   price lines    current BUY: entry / profit-take / stop-loss; an open trade's levels
+ *   setup filter   BUY / BUY S of a switched-off setup (rebound / trend) are left out, with their exits and lines
  */
 import type { AnalysisResult, ExitReason, Outcome, SetupName, TargetKey, TargetSpec } from "../types/api";
 
@@ -24,8 +25,30 @@ export interface PriceLineDef {
   style: 0 | 1 | 2 | 3; // solid, dotted, dashed, large dashed
 }
 
+/** The rule-based setups a BUY / BUY S can be in (every BUY needs one of them). */
+export type BuySetup = "rebound" | "trend";
+export const BUY_SETUPS: BuySetup[] = ["rebound", "trend"];
+/** Which BUY setups are drawn: switching one off filters its BUY / BUY S markers (and their exits, price lines) out. */
+export type BuySetupFilter = Record<BuySetup, boolean>;
+export const ALL_BUY_SETUPS: BuySetupFilter = { rebound: true, trend: true };
+
 /** What the user has switched on. */
-export type MarkerVisibility = Record<TargetKey, boolean> & { exits: boolean };
+export type MarkerVisibility = Record<TargetKey, boolean> & { exits: boolean; setups: BuySetupFilter };
+
+/** Is a decision of this target in this setup drawn? Only BUYs are filtered (SELL is always the interim-top setup). */
+export function setupShown(spec: TargetSpec, setup: SetupName, f: BuySetupFilter): boolean {
+  return spec.kind !== "entry" || !(setup === "rebound" || setup === "trend") || f[setup];
+}
+
+/** BUY + BUY S decisions per setup in the analysed window (for the filter buttons). */
+export function buySetupCounts(r: AnalysisResult): Record<BuySetup, number> {
+  const out: Record<BuySetup, number> = { rebound: 0, trend: 0 };
+  for (const t of Object.values(r.targets)) {
+    if (t.spec.kind !== "entry") continue;
+    for (const s of t.signals) if (s.setup === "rebound" || s.setup === "trend") out[s.setup] += 1;
+  }
+  return out;
+}
 
 export const GREEN = "#368727";
 export const RED = "#c8102e";
@@ -103,8 +126,8 @@ export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMar
     const up = t.spec.direction === "up";
     const d = decided.get(key);
     if (d) {
-      // Current K line: always show the decision; grey "–" when there is no BUY / SELL.
-      out.push(d.active
+      // Current K line: always show the decision; grey "–" when there is no BUY / SELL (or its setup is filtered out).
+      out.push(d.active && setupShown(t.spec, d.setup, vis.setups)
         ? { time: d.time, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
           color: DECISION_COLOR, text: MARK[key].text, size: 1.4 }
         : { time: d.time, position: up ? "belowBar" : "aboveBar", shape: "circle",
@@ -112,6 +135,7 @@ export function buildMarkers(r: AnalysisResult, vis: MarkerVisibility): EntryMar
     }
     for (const s of t.signals) {
       if (d && s.time === d.time) continue; // the current-K marker above replaces it
+      if (!setupShown(t.spec, s.setup, vis.setups)) continue; // filtered out, with its exit dot
       out.push({
         time: s.time, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
         color: OUTCOME_COLOR[s.outcome], ...MARK[key],
@@ -138,12 +162,13 @@ export function buildPriceLines(r: AnalysisResult, vis: MarkerVisibility): Price
   if (!vis.short) return out;
   const t = r.targets.short;
   const ot = t.open_trade?.trade;
-  if (ot?.status === "open" && ot.stop !== undefined && ot.target !== undefined) {
+  if (ot?.status === "open" && ot.stop !== undefined && ot.target !== undefined
+    && setupShown(t.spec, t.open_trade!.setup, vis.setups)) {
     out.push({ price: ot.target, color: GREEN, title: "Open trade TP", style: 1 });
     out.push({ price: ot.stop, color: RED, title: "Open trade SL", style: 1 });
   }
   const c = t.current;
-  if (c?.signal) {
+  if (c?.signal && setupShown(t.spec, c.setup, vis.setups)) {
     out.push({ price: c.entry, color: BLUE, title: "BUY entry", style: 2 });
     out.push({ price: c.target, color: GREEN, title: "Profit-take", style: 2 });
     out.push({ price: c.stop, color: RED, title: "Stop-loss", style: 2 });

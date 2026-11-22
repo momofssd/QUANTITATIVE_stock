@@ -83,6 +83,8 @@ def _tally(lots: list[dict]) -> dict:
     invested = sum(t["cost"] for t in lots)
     won = [t for t in closed if t["pnl"] > 0]
     lost = [t for t in closed if t["pnl"] <= 0]
+    shares = sum(t["qty"] for t in lots)
+    open_shares, open_cost = sum(t["qty"] for t in still), sum(t["cost"] for t in still)
 
     def mean(v):
         return round(sum(v) / len(v), 2) if v else None
@@ -91,6 +93,10 @@ def _tally(lots: list[dict]) -> dict:
         "win_rate": round(wins / len(closed), 3) if closed else None,
         "realized_pnl": round(realized, 2), "open_pnl": round(open_pnl, 2), "total_pnl": round(realized + open_pnl, 2),
         "invested": round(invested, 2),
+        # average cost per share: of every share bought, and of the shares still held
+        "shares": round(shares, 6), "avg_cost": round(invested / shares, 2) if shares else None,
+        "open_shares": round(open_shares, 6), "open_cost": round(open_cost, 2),
+        "open_avg_cost": round(open_cost / open_shares, 2) if open_shares else None,
         "return_on_invested_pct": round((realized + open_pnl) / invested * 100, 2) if invested else None,
         "avg_pnl": round(realized / len(closed), 2) if closed else None,
         "best_pnl": max((t["pnl"] for t in closed), default=None),
@@ -173,10 +179,32 @@ def run(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizi
     return {"trades": lots[::-1], "summary": summary, "by_setup": by_setup, "skipped": skipped[::-1]}
 
 
+def _held(cost: float, shares: float, last: dict, **extra) -> dict:
+    """A position bought for `cost` and held to the last close: average cost, value, P&L."""
+    value = shares * last["price"]
+    return {**extra, "cost": round(cost, 2), "shares": round(shares, 6),
+            "avg_cost": round(cost / shares, 2) if shares else None, "value": round(value, 2),
+            "pnl": round(value - cost, 2), "pnl_pct": round((value / cost - 1) * 100, 2) if cost else None}
+
+
+def dca(start: dict, weekly: list[dict], last: dict, total: float) -> dict | None:
+    """Weekly dollar-cost averaging with the same money: `total` in equal amounts, bought at the first BUY's close and
+    then at the first close of every later week up to the last bar (weekly = the first bar of each week), held to the
+    last close."""
+    if total <= 0:
+        return None
+    bars = [start] + [w for w in weekly if start["i"] < w["i"] <= last["i"]]
+    per = total / len(bars)
+    shares = sum(per / b["price"] for b in bars)
+    return _held(total, shares, last, buys=len(bars), per_buy=round(per, 2), last_buy_date=bars[-1]["date"])
+
+
 def _variant(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool, sizing: str,
-             year_start: dict | None = None, limit: int | None = LISTED, max_shares: float | None = None) -> dict | None:
+             year_start: dict | None = None, limit: int | None = LISTED, max_shares: float | None = None,
+             weekly: list[dict] | None = None) -> dict | None:
     """One strategy over the `limit` most recent BUYs (None = all given): the run + its period, counts, baselines.
-    With a cap (max_shares) the baselines use the BUYs actually bought."""
+    With a cap (max_shares) the baselines use the BUYs actually bought. weekly (the first bar of each week) adds the
+    weekly DCA baseline."""
     if limit is not None:
         buys = buys[-limit:]
     if not buys:
@@ -187,15 +215,16 @@ def _variant(buys: list[dict], sells: list[dict], last: dict, use_bracket: bool,
     q0 = _qty(start["price"], sizing)
     cost_all = sum(_qty(b["price"], sizing) * b["price"] for b in taken)
     shares_all = sum(_qty(b["price"], sizing) for b in taken)
-    never = sum(_qty(b["price"], sizing) * (last["price"] - b["price"]) for b in taken)
     return {
         **run(buys, sells, last, use_bracket, sizing, year_start, max_shares),
         "start_time": start["time"], "start_date": start["date"], "buys": len(buys), "sells": len(sells),
-        # baselines: the same BUYs never sold; one lot bought at the first BUY and held
-        "hold_all": {"pnl": round(never, 2), "pnl_pct": round(never / cost_all * 100, 2) if cost_all else None,
-                     # every lot kept: shares on hand, what they cost, what they are worth at the last close
-                     "shares": round(shares_all, 6), "cost": round(cost_all, 2),
-                     "value": round(shares_all * last["price"], 2)},
+        "last_price": round(last["price"], 2),
+        # baselines with the same money (what the BUYs bought): the same BUYs never sold - every lot kept, shares on
+        # hand, what they cost, what they are worth at the last close; all of it at the first BUY; weekly DCA
+        "hold_all": _held(cost_all, shares_all, last),
+        "lump_sum": _held(cost_all, cost_all / start["price"], last) if cost_all else None,
+        "dca": dca(start, weekly, last, cost_all) if weekly is not None else None,
+        # one lot bought at the first BUY and held
         "buy_hold": {"pnl": round(q0 * (last["price"] - start["price"]), 2),
                      "pnl_pct": round((last["price"] / start["price"] - 1) * 100, 2)},
     }

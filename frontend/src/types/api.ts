@@ -257,6 +257,8 @@ export interface SimTally {
   lots: number; closed: number; open: number; wins: number; losses: number; win_rate: number | null;
   realized_pnl: number; open_pnl: number; total_pnl: number;
   invested: number; return_on_invested_pct: number | null;
+  // average cost per share: of every share bought, and of the shares still held
+  shares: number; avg_cost: number | null; open_shares: number; open_cost: number; open_avg_cost: number | null;
   avg_pnl: number | null; best_pnl: number | null; worst_pnl: number | null; avg_bars: number | null;
   // per transaction (sold lots)
   avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null;
@@ -342,9 +344,20 @@ export interface SimStrategy extends SimRun {
   start_date: string;
   buys: number;
   sells: number;
+  last_price: number;
   /** The same BUYs, never sold: P&L, shares on hand, their cost and their value at the last close. */
-  hold_all: { pnl: number; pnl_pct: number; shares: number; cost: number; value: number };
+  hold_all: HeldPosition;
+  /** The same money, all of it at the first BUY's close and held (null when nothing was bought). */
+  lump_sum: HeldPosition | null;
+  /** Weekly DCA with the same money: equal amounts at the first BUY's close, then at the first close of every later
+   *  week, held to the last close (Backtests page only; null in the analysis' own simulation). */
+  dca: (HeldPosition & { buys: number; per_buy: number; last_buy_date: string }) | null;
   buy_hold: { pnl: number; pnl_pct: number }; // one lot bought at the first BUY and held
+}
+
+/** A position bought for `cost` and held to the last close. */
+export interface HeldPosition {
+  cost: number; shares: number; avg_cost: number | null; value: number; pnl: number; pnl_pct: number | null;
 }
 
 export interface SimBook {

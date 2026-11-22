@@ -2,7 +2,8 @@
  * Backtests page: scenarios on the CURRENT training (the last "Find entry points" run, see useAnalysis).
  *   settings   most recent N BUY decisions (1-100, default 30) · strategy rebound / trend / both ·
  *              buy when the model's P >= threshold (default 60%) · $100 or 1 share per BUY · sell rule
- *   results    Overall · YTD · per transaction · by setup · rebound vs trend vs both · trades
+ *   results    Overall (trades · profit · average cost) · the same money other ways (never sold, weekly DCA, all
+ *              at the first BUY) · YTD · per transaction · by setup · rebound vs trend vs both · trades
  *   logs       the models' own most recent decisions: strategy simulation + trade log, BUY / BUY S / SELL tables
  *              (DecisionLogs; moved here from the analysis card)
  * The server picks the decisions from that training's out-of-sample probabilities and simulates them
@@ -176,66 +177,154 @@ function Stat({ label, value, cls, sub }: { label: string; value: string; cls?: 
   return <div className="bt-stat"><label>{label}</label><b className={cls}>{value}</b>{sub && <small>{sub}</small>}</div>;
 }
 
-function Blocks({ sc, run, sizing, barUnit }: { sc: BacktestScenario; run: SimRun; sizing: SimSizing; barUnit: string }) {
-  const s = run.summary;
-  const y = s.ytd;
-  const lot = sizing === "usd" ? "$100" : "1 share";
+const perShare = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${money(v)} / sh`);
+const fracShares = (v: number) => v.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+/** Overall result in three groups: the trades, the profit, the average cost. */
+function Overall({ sc, sizing }: { sc: BacktestScenario; sizing: SimSizing }) {
+  const s = sc.summary;
+  const vsHeld = s.open_avg_cost ? (sc.last_price / s.open_avg_cost - 1) * 100 : null;
   return (
-    <div className="bt-blocks">
-      <div className="bt-block">
-        <h3>Overall <small>{sc.start_date} → {sc.end_date}</small></h3>
-        <div className="bt-big">
-          <b className={dirCls(s.total_pnl)}>{usd(s.total_pnl)}</b>
-          <span className={dirCls(s.return_on_invested_pct)}>{signedPct(s.return_on_invested_pct)} on {money(s.invested)} invested</span>
-        </div>
-        <div className="bt-stats">
-          <Stat label="Win rate" value={pct(s.win_rate)} cls={s.win_rate !== null && s.win_rate >= 0.5 ? "up" : ""} sub={`${s.wins} won / ${s.losses} lost`} />
-          <Stat label="Lots" value={String(s.lots)} sub={`${s.closed} sold · ${s.open} still held`} />
-          <Stat label="Realized" value={usd(s.realized_pnl)} cls={dirCls(s.realized_pnl)} />
-          <Stat label="Still held" value={s.open ? usd(s.open_pnl) : "none"} cls={dirCls(s.open_pnl)} sub="at the last close" />
-          <Stat label="Max at work" value={money(s.max_capital)} sub={`${s.max_lots} lots at once · ${signedPct(s.return_pct, 1)} on it`} />
-          <Stat label="Same BUYs, never sold" value={`${usd(sc.hold_all.pnl)} (${signedPct(sc.hold_all.pnl_pct, 1)})`}
-            cls={dirCls(sc.hold_all.pnl)}
-            sub={`${shares(sc.hold_all.shares, sizing)} shares on hand · cost ${money(sc.hold_all.cost)} · worth ${money(sc.hold_all.value)}`} />
-          <Stat label="Buy & hold from the first BUY" value={usd(sc.buy_hold.pnl)} cls={dirCls(sc.buy_hold.pnl)}
-            sub={`${lot} bought ${sc.start_date}, never sold`} />
+    <div className="bt-block bt-overall">
+      <h3>Overall <small>{sc.start_date} → {sc.end_date}</small></h3>
+      <div className="bt-big">
+        <b className={dirCls(s.total_pnl)}>{usd(s.total_pnl)}</b>
+        <span className={dirCls(s.return_on_invested_pct)}>{signedPct(s.return_on_invested_pct)} on {money(s.invested)} invested</span>
+      </div>
+      <div className="bt-groups">
+        <div className="bt-group">
+          <h4>Trades</h4>
+          <Stat label="Win rate" value={pct(s.win_rate)} cls={s.win_rate !== null && s.win_rate >= 0.5 ? "up" : ""}
+            sub={`${s.wins} won / ${s.losses} lost (sold lots)`} />
+          <Stat label="Lots bought" value={String(s.lots)} sub={`${s.closed} sold · ${s.open} still held`} />
           {s.max_shares != null && (
             <Stat label="Max shares held" value={`${shares(s.max_shares_held ?? 0, sizing)} of ${capText(s.max_shares)}`}
               sub={`${s.skipped ?? 0} BUY${s.skipped === 1 ? "" : "s"} skipped at the cap`} />
           )}
         </div>
-      </div>
-      <div className="bt-block">
-        <h3>YTD <small>since {y?.since ?? "—"}</small></h3>
-        {y ? (
-          <>
-            <div className="bt-big">
-              <b className={dirCls(y.pnl)}>{usd(y.pnl)}</b>
-              <span className={dirCls(y.return_pct)}>{signedPct(y.return_pct)} on the money at work this year</span>
-            </div>
-            <div className="bt-stats">
-              <Stat label="Win rate" value={pct(y.win_rate)} cls={y.win_rate !== null && y.win_rate >= 0.5 ? "up" : ""} sub={`${y.wins} of ${y.lots_sold} sold this year`} />
-              <Stat label="Lots held this year" value={String(y.lots_held)} sub={`${y.lots_sold} sold this year`} />
-              <Stat label="Avg / sold lot" value={signedPct(y.avg_return_pct)} cls={dirCls(y.avg_return_pct)} />
-            </div>
-            <p className="ta-note">Lots held over the year end count from the last close of the previous year.</p>
-          </>
-        ) : <p className="ta-note">No YTD figures.</p>}
-      </div>
-      <div className="bt-block">
-        <h3>Per transaction <small>sold lots</small></h3>
-        <div className="bt-big">
-          <b className={dirCls(s.avg_return_pct)}>{signedPct(s.avg_return_pct)}</b>
-          <span>average return per trade{s.avg_pnl !== null && <> ({usd(s.avg_pnl)})</>}</span>
+        <div className="bt-group">
+          <h4>Profit</h4>
+          <Stat label="Realized" value={usd(s.realized_pnl)} cls={dirCls(s.realized_pnl)} sub={`${s.closed} lots sold`} />
+          <Stat label="Still held" value={s.open ? usd(s.open_pnl) : "none"} cls={dirCls(s.open_pnl)}
+            sub={s.open ? `${s.open} lots at the last close` : undefined} />
+          <Stat label="Max at work" value={money(s.max_capital)} sub={`${s.max_lots} lots at once · ${signedPct(s.return_pct, 1)} on it`} />
         </div>
-        <div className="bt-stats">
-          <Stat label="Avg gain (winners)" value={signedPct(s.avg_win_pct)} cls="up" sub={s.avg_win_pnl !== null ? usd(s.avg_win_pnl) : undefined} />
-          <Stat label="Avg loss (losers)" value={signedPct(s.avg_loss_pct)} cls="down" sub={s.avg_loss_pnl !== null ? usd(s.avg_loss_pnl) : undefined} />
-          <Stat label="Best / worst" value={`${usd(s.best_pnl)} / ${usd(s.worst_pnl)}`} />
-          <Stat label="Avg held" value={s.avg_bars !== null ? span(Math.round(s.avg_bars), barUnit) : "—"} />
+        <div className="bt-group">
+          <h4>Average cost</h4>
+          <Stat label="Every share bought" value={perShare(s.avg_cost)}
+            sub={`${shares(s.shares, sizing)} shares for ${money(s.invested)}`} />
+          <Stat label="Shares still held" value={s.open ? perShare(s.open_avg_cost) : "none"}
+            sub={s.open ? `${shares(s.open_shares, sizing)} shares for ${money(s.open_cost)}` : undefined} />
+          <Stat label="Last close" value={money(sc.last_price)} cls={dirCls(vsHeld)}
+            sub={vsHeld !== null ? `${signedPct(vsHeld, 1)} vs the held shares' cost` : sc.end_date} />
         </div>
       </div>
     </div>
+  );
+}
+
+/** The strategy vs the same money invested other ways, all valued at the last close. */
+function SameMoney({ sc, sizing }: { sc: BacktestScenario; sizing: SimSizing }) {
+  const s = sc.summary;
+  const rows: { key: string; name: string; how: string; buys: string; avg: number | null; held: string;
+    end: number; pnl: number; ret: number | null; active?: boolean }[] = [
+    { key: "strategy", name: "This strategy", how: "BUY on the decisions, sell on SELL", active: true,
+      buys: `${s.lots} lots`, avg: s.avg_cost, held: shares(s.open_shares, sizing),
+      end: s.invested + s.total_pnl, pnl: s.total_pnl, ret: s.return_on_invested_pct },
+    { key: "hold", name: "Same BUYs, never sold", how: "every lot kept",
+      buys: `${s.lots} lots`, avg: sc.hold_all.avg_cost, held: shares(sc.hold_all.shares, sizing),
+      end: sc.hold_all.value, pnl: sc.hold_all.pnl, ret: sc.hold_all.pnl_pct },
+  ];
+  const d = sc.dca;
+  if (d) {
+    rows.push({ key: "dca", name: "Weekly DCA", how: `${money(d.per_buy)} every week, ${sc.start_date} → ${d.last_buy_date}`,
+      buys: `${d.buys} weeks`, avg: d.avg_cost, held: fracShares(d.shares), end: d.value, pnl: d.pnl, ret: d.pnl_pct });
+  }
+  const l = sc.lump_sum;
+  if (l) {
+    rows.push({ key: "lump", name: "All at the first BUY", how: `bought ${sc.start_date}, held`,
+      buys: "1", avg: l.avg_cost, held: fracShares(l.shares), end: l.value, pnl: l.pnl, ret: l.pnl_pct });
+  }
+  const diff = d ? s.total_pnl - d.pnl : null;
+  return (
+    <>
+      <div className="table-scroll">
+        <table className="grid bt-compare bt-same">
+          <thead>
+            <tr>
+              <th className="l">Same {money(s.invested)}</th><th>Buys</th><th>Avg cost / share</th><th>Shares held now</th>
+              <th>Ends with</th><th>P&amp;L</th><th>Return</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key} className={r.active ? "active" : ""}>
+                <td className="l">{r.active ? <b>{r.name}</b> : r.name}<small>{r.how}</small></td>
+                <td>{r.buys}</td>
+                <td>{perShare(r.avg)}</td>
+                <td>{r.held}</td>
+                <td>{money(r.end)}</td>
+                <td className={dirCls(r.pnl)}><b>{usd(r.pnl)}</b></td>
+                <td className={dirCls(r.ret)}>{signedPct(r.ret)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {d && diff !== null && (
+        <p className="bt-verdict">
+          Against a weekly DCA of the same money, this strategy made{" "}
+          <b className={dirCls(diff)}>{money(Math.abs(diff))} {diff >= 0 ? "more" : "less"}</b>{" "}
+          ({signedPct(s.return_on_invested_pct, 1)} vs {signedPct(d.pnl_pct, 1)}), at an average cost of{" "}
+          {perShare(s.avg_cost)} vs {perShare(d.avg_cost)}. It never had more than {money(s.max_capital)} at work at once
+          ({signedPct(s.return_pct, 1)} on that), while the DCA ends with all {money(d.cost)} in the stock.
+        </p>
+      )}
+    </>
+  );
+}
+
+function Blocks({ sc, sizing, barUnit }: { sc: BacktestScenario; sizing: SimSizing; barUnit: string }) {
+  const s = sc.summary;
+  const y = s.ytd;
+  return (
+    <>
+      <Overall sc={sc} sizing={sizing} />
+      <div className="ta-section">Same money, other ways ({sc.start_date} → {sc.end_date}, valued at the last close)</div>
+      <SameMoney sc={sc} sizing={sizing} />
+      <div className="bt-blocks bt-blocks-2">
+        <div className="bt-block">
+          <h3>YTD <small>since {y?.since ?? "—"}</small></h3>
+          {y ? (
+            <>
+              <div className="bt-big">
+                <b className={dirCls(y.pnl)}>{usd(y.pnl)}</b>
+                <span className={dirCls(y.return_pct)}>{signedPct(y.return_pct)} on the money at work this year</span>
+              </div>
+              <div className="bt-stats">
+                <Stat label="Win rate" value={pct(y.win_rate)} cls={y.win_rate !== null && y.win_rate >= 0.5 ? "up" : ""} sub={`${y.wins} of ${y.lots_sold} sold this year`} />
+                <Stat label="Lots held this year" value={String(y.lots_held)} sub={`${y.lots_sold} sold this year`} />
+                <Stat label="Avg / sold lot" value={signedPct(y.avg_return_pct)} cls={dirCls(y.avg_return_pct)} />
+              </div>
+              <p className="ta-note">Lots held over the year end count from the last close of the previous year.</p>
+            </>
+          ) : <p className="ta-note">No YTD figures.</p>}
+        </div>
+        <div className="bt-block">
+          <h3>Per transaction <small>sold lots</small></h3>
+          <div className="bt-big">
+            <b className={dirCls(s.avg_return_pct)}>{signedPct(s.avg_return_pct)}</b>
+            <span>average return per trade{s.avg_pnl !== null && <> ({usd(s.avg_pnl)})</>}</span>
+          </div>
+          <div className="bt-stats">
+            <Stat label="Avg gain (winners)" value={signedPct(s.avg_win_pct)} cls="up" sub={s.avg_win_pnl !== null ? usd(s.avg_win_pnl) : undefined} />
+            <Stat label="Avg loss (losers)" value={signedPct(s.avg_loss_pct)} cls="down" sub={s.avg_loss_pnl !== null ? usd(s.avg_loss_pnl) : undefined} />
+            <Stat label="Best / worst" value={`${usd(s.best_pnl)} / ${usd(s.worst_pnl)}`} />
+            <Stat label="Avg held" value={s.avg_bars !== null ? span(Math.round(s.avg_bars), barUnit) : "—"} />
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -423,7 +512,7 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
 
           {res && v && sc && (
             <div className={bt.loading ? "bt-results busy" : "bt-results"}>
-              <Blocks sc={sc} run={sc} sizing={res.params.sizing} barUnit={res.bar_unit} />
+              <Blocks sc={sc} sizing={res.params.sizing} barUnit={res.bar_unit} />
               <div className="ta-section">Win rate and P&amp;L by BUY setup</div>
               <BySetup run={sc} />
               <div className="ta-section">Rebound vs trend vs both (same decisions count, threshold and lot size)</div>
@@ -451,8 +540,12 @@ export function BacktestPage({ a, chart, stale, onTrain, onError }: Props) {
                 Every BUY buys {res.params.sizing === "usd" ? "$100" : "1 share"} at that close (also while holding); the
                 next SELL decision sells everything held
                 {sell === "with_bracket" && `; each lot is also sold earlier at its own profit-take / stop-loss, or after ${r.targets.short.spec.horizon} sessions`}
-                {sell === "sell_only" && res.params.max_shares !== null && `; with Max shares held, a BUY that would take the shares held above ${capText(res.params.max_shares)} is skipped (BUYs resume after the next SELL), and "Same BUYs, never sold" counts only the BUYs actually made`}. Lots still
-                held are valued at the last close. Before commissions and slippage. Past results do not guarantee future results.
+                {sell === "sell_only" && res.params.max_shares !== null && `; with Max shares held, a BUY that would take the shares held above ${capText(res.params.max_shares)} is skipped (BUYs resume after the next SELL), and the "same money" comparisons count only the BUYs actually made`}. Lots still
+                held are valued at the last close. Average cost = money spent / shares bought. "Same money, other ways"
+                spends what the BUYs spent: on the same BUYs without ever selling; in equal weekly amounts (weekly DCA:
+                at the first BUY's close, then at the first close of every later week up to the last bar,
+                fractional shares); or all at the first BUY's close. Each is held to the last close. Before commissions
+                and slippage. Past results do not guarantee future results.
               </p>
             </div>
           )}

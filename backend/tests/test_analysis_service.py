@@ -123,6 +123,9 @@ def test_compute_payload(monkeypatch, tf, rng, start, bracket):
         assert res["decisions"] == min(10, out["variants"]["sell_only"]["pool"]["both"]["qualified"])
         sm = res["summary"]
         assert sm["lots"] == res["decisions"] and "ytd" in sm
+        # weekly DCA with the same money, from the first BUY to the last bar
+        assert res["dca"]["cost"] == sm["invested"] and res["dca"]["buys"] >= 1
+        assert all(b["i"] >= 0 for b in run["weekly"]) and len({b["date"][:10] for b in run["weekly"]}) == len(run["weekly"])
     assert len(r["k_momentum"]) == svc.MOMENTUM_BARS and r["k_momentum"][-1]["rsi"] is not None
     tr = r["training"]
     assert tr["data"]["bars"] == len(df) and tr["train_bars"] == svc.TRAIN_BARS

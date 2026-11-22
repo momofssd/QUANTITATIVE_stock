@@ -1,7 +1,9 @@
 /** The "Chart" card: title + the selected range's gain / loss + status note, toolbar, chart. */
 import { forwardRef, useState } from "react";
 import type { RangeChange } from "../../chart/legend";
-import type { EntryMarker, PriceLineDef } from "../../chart/markers";
+import {
+  BUY_SETUPS, SETUP_LABEL, type BuySetup, type BuySetupFilter, type EntryMarker, type PriceLineDef,
+} from "../../chart/markers";
 import { feedName } from "../../config/feeds";
 import { TF_LABEL } from "../../config/timeframes";
 import type { BarsState, ChartOverlay } from "../../hooks/useBars";
@@ -22,6 +24,37 @@ function RangeBadge({ rc }: { rc: RangeChange }) {
 import { ChartToolbar } from "./ChartToolbar";
 import { PriceChart, type PriceChartHandle } from "./PriceChart";
 
+export interface BuyFilterProps {
+  value: BuySetupFilter;
+  counts: Record<BuySetup, number>; // BUY + BUY S decisions per setup in the analysed window
+  onToggle: (setup: BuySetup, on: boolean) => void;
+}
+
+const SETUP_HINT: Record<BuySetup, string> = {
+  rebound: "bought while under pressure (below SMA20, falling) as selling momentum eases",
+  trend: "bought in a clear uptrend (close > SMA20 > SMA50, both rising, ADX ≥ 20)",
+};
+
+/** Two toggles: switch a setup off to filter its BUY / BUY S entries off the chart. */
+function BuySetupButtons({ f }: { f: BuyFilterProps }) {
+  return (
+    <div className="buy-filter" role="group" aria-label="BUY entries shown, by setup">
+      <span className="note">BUY setups</span>
+      <div className="seg seg-sm">
+        {BUY_SETUPS.map((k) => {
+          const on = f.value[k];
+          return (
+            <button key={k} className={on ? "on" : "off"} aria-pressed={on} onClick={() => f.onToggle(k, !on)}
+              title={`${SETUP_LABEL[k]} BUYs (${f.counts[k]}): ${SETUP_HINT[k]}. Click to ${on ? "filter them out" : "show them again"}.`}>
+              {SETUP_LABEL[k]} <small>{f.counts[k]}</small>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface Props {
   settings: ChartSettings;
   bars: BarsState | null;
@@ -33,6 +66,8 @@ interface Props {
   priceLines: PriceLineDef[];
   analyzing: boolean;
   onAnalyze: () => void;
+  /** BUY setup filter; null while no analysis markers are on the chart. */
+  buyFilter: BuyFilterProps | null;
 }
 
 function chartNote(bars: BarsState | null): string {
@@ -48,7 +83,7 @@ function chartNote(bars: BarsState | null): string {
 }
 
 export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
-  { settings, bars, overlay, busyNote, onNeedOlder, onDateError, markers, priceLines, analyzing, onAnalyze },
+  { settings, bars, overlay, busyNote, onNeedOlder, onDateError, markers, priceLines, analyzing, onAnalyze, buyFilter },
   ref,
 ) {
   const p = bars?.payload.params;
@@ -59,6 +94,7 @@ export const ChartCard = forwardRef<PriceChartHandle, Props>(function ChartCard(
         <h2>Chart{range && <RangeBadge rc={range} />}</h2>
         <div className="ct-right">
           <span className="note">{busyNote ?? chartNote(bars)}</span>
+          {buyFilter && <BuySetupButtons f={buyFilter} />}
           <button
             className="btn btn-primary btn-analyze" onClick={onAnalyze} disabled={analyzing}
             title="Retrain the quant analysis on this chart's K-lines and mark short-term entry / take-profit points"

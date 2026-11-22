@@ -17,6 +17,9 @@ threshold = the model's own (training base rate + 10 pts, per retrain) unless th
 the backtest uses exactly the decisions shown in the analysis.
 
 max_shares (sell-signal strategy only): most shares held at once; a BUY that would go over it is skipped.
+
+Baselines with the same money as the BUYs: the same BUYs never sold, all of it at the first BUY, and a weekly DCA
+(run["weekly"] = the first bar of each week in the window).
 """
 from __future__ import annotations
 
@@ -60,7 +63,7 @@ def _scenario(run: dict, cands: list[dict], setups: tuple[str, ...], min_prob: f
     if not buys:
         return None
     sc = portfolio._variant(buys, sells_all, run["last"], use_bracket, sizing, run.get("year_start"), limit=None,
-                            max_shares=max_shares)
+                            max_shares=max_shares, weekly=run.get("weekly"))
     return {**sc, "decisions": len(buys), "end_date": run["last"]["date"],
             "probs": [round(b["prob"], 3) for b in buys]}
 

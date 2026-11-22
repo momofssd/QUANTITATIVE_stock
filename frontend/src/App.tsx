@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  buildMarkers, buildPriceLines, type EntryMarker, type PriceLineDef,
+  buildMarkers, buildPriceLines, buySetupCounts, type EntryMarker, type PriceLineDef,
 } from "./chart/markers";
 import { AnalysisPanel } from "./components/analysis/AnalysisPanel";
 import { BacktestPage } from "./components/backtest/BacktestPage";
@@ -96,6 +96,13 @@ export default function App() {
     () => (ar && sameBars ? buildPriceLines(ar, analysis.visible) : NO_LINES),
     [ar, sameBars, analysis.visible],
   );
+  // BUY setup filter on the chart card (only while the analysis' markers are drawn)
+  const setupCounts = useMemo(() => (ar ? buySetupCounts(ar) : null), [ar]);
+  const buyFilter = useMemo(
+    () => (setupCounts && sameBars && !analysis.loading
+      ? { value: analysis.visible.setups, counts: setupCounts, onToggle: analysis.toggleSetup } : null),
+    [setupCounts, sameBars, analysis.loading, analysis.visible.setups, analysis.toggleSetup],
+  );
 
   const chartRef = useRef<PriceChartHandle>(null);
   const [tickVersion, setTickVersion] = useState(0);
@@ -172,7 +179,7 @@ export default function App() {
             busyNote={barsApi.busyNote} onNeedOlder={barsApi.loadOlder}
             onDateError={(msg) => (msg ? banner.show({ kind: "warn", message: msg }) : banner.clear())}
             markers={markers} priceLines={priceLines}
-            analyzing={analysis.loading} onAnalyze={onAnalyze}
+            analyzing={analysis.loading} onAnalyze={onAnalyze} buyFilter={buyFilter}
           />
           <aside className="side">
             <KeyStatistics quote={quote.quote} />

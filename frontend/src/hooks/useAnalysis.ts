@@ -4,7 +4,7 @@
  * the symbol changes; when the interval changes it is kept but flagged stale (its markers belong to other bars).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MarkerVisibility } from "../chart/markers";
+import { ALL_BUY_SETUPS, type BuySetup, type BuySetupFilter, type MarkerVisibility } from "../chart/markers";
 import { load, save } from "../lib/storage";
 import { api, isAbort, type AnalysisQuery, type ApiError } from "../services/api";
 import type { AnalysisResult, BracketMode, IntradayCheck } from "../types/api";
@@ -31,9 +31,10 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     const b = { ...DEFAULT_BRACKET, ...load<Bracket>("bracket", DEFAULT_BRACKET) };
     return (b.mode as string) === "dynamic" ? { ...b, mode: "optimal" } : b; // the old per-decision mode was replaced
   });
-  const [visible, setVisible] = useState<MarkerVisibility>({
+  const [visible, setVisible] = useState<MarkerVisibility>(() => ({
     short: true, accum: true, tp_short: true, exits: true,
-  });
+    setups: { ...ALL_BUY_SETUPS, ...load<Partial<BuySetupFilter>>("buySetupFilter", {}) }, // remembered
+  }));
   const ctrl = useRef<AbortController | null>(null);
 
   const clear = useCallback(() => {
@@ -60,8 +61,9 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
       const r = await api.analysis(sym, { ...query, tp_atr: b.tp, sl_atr: b.sl, bracket: b.mode, refresh: true }, c.signal);
       setResult(r);
       setQuery(inputs);
-      // BUY and SELL markers are both drawn by default (the SELL card warns when that model has no reliable edge).
-      setVisible({ short: true, accum: true, exits: true, tp_short: true });
+      // BUY and SELL markers are both drawn by default (the SELL card warns when that model has no reliable edge);
+      // the BUY setup filter is the user's choice and stays.
+      setVisible((v) => ({ ...v, short: true, accum: true, exits: true, tp_short: true }));
     } catch (e) {
       if (!isAbort(e)) onError(e as ApiError);
     } finally {
@@ -69,7 +71,14 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     }
   }, [onError]);
 
-  const toggle = useCallback((key: keyof MarkerVisibility, on: boolean) => setVisible((v) => ({ ...v, [key]: on })), []);
+  const toggle = useCallback((key: Exclude<keyof MarkerVisibility, "setups">, on: boolean) =>
+    setVisible((v) => ({ ...v, [key]: on })), []);
+  /** Show / filter out the BUY + BUY S markers of one setup (remembered). */
+  const toggleSetup = useCallback((setup: BuySetup, on: boolean) => setVisible((v) => {
+    const setups = { ...v.setups, [setup]: on };
+    save("buySetupFilter", setups);
+    return { ...v, setups };
+  }), []);
 
   // The current K line is live: refresh today's 5-minute check every minute while results are shown.
   const [intraday, setIntraday] = useState<IntradayCheck | null>(null);
@@ -88,7 +97,7 @@ export function useAnalysis(symbol: string, onError: (e: ApiError) => void) {
     return () => window.clearInterval(id);
   }, [result]);
 
-  return { result, query, loading, startedAt, visible, bracket, setBracket, run, clear, toggle, intraday };
+  return { result, query, loading, startedAt, visible, bracket, setBracket, run, clear, toggle, toggleSetup, intraday };
 }
 
 export type AnalysisApi = ReturnType<typeof useAnalysis>;
